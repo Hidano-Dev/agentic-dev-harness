@@ -43,8 +43,9 @@ Orchestrator 型 Skill。
    `/kiro:spec-init-batch` の経路を案内して停止する。判定に迷う場合は Step 4 の確認手順で
    分割の要否をユーザーに確認する。ただしこの時点では feature 名も進行ログも未作成のため、
    `references/confirmation-channels.md` の**設計ルール 5（pre-log confirmation）**に従い
-   `feature: (未確定)` / `gate: none` で組み立て、回答は Step 2 のログ作成時に最初のエントリとして
-   記録する（分割経路へ抜けた場合は完了報告に明記する）。単一 Spec と判定したら Phase 1 から開始する
+   `feature: (未確定)` / `gate: none` で組み立て、回答は Step 2 のログ作成時に
+   `## Pre-flight: マルチ Spec 判定` エントリとして記録する（分割経路へ抜けてログを作らない場合は
+   完了報告に明記する）。単一 Spec と判定したら Phase 1 から開始する
 3. オプション:
    - `--stop-after <phase>`: 指定フェーズのゲート通過後に停止して報告
      （実装前に止めたい場合は `--stop-after tasks`、PR を作らない場合は `--stop-after implementation`）
@@ -54,8 +55,9 @@ Orchestrator 型 Skill。
 ### Step 2: 進行ログの初期化
 
 `.kiro/orchestration/<feature>/log.md` を `templates/orchestration-log.md` から作成する
-（新規モードでは feature 名が確定する spec-init 直後に作成し、Phase 1 と Gate S の結果を
-最初のエントリとして記録する。再開モードでは既存ログを読み、追記を続ける）。
+（新規モードでは feature 名が確定する spec-init 直後に作成する。記録順は
+**(1) Step 1 でマルチ Spec 判定を確認していれば `## Pre-flight` エントリ → (2) Phase 1 と Gate S の結果**。
+確認していなければ Pre-flight 節は作らない。再開モードでは既存ログを読み、追記を続ける）。
 以降、各フェーズ完了ごとに追記する:
 
 - フェーズ名 / 実行コマンド / 結果サマリ（1〜3行）
