@@ -37,7 +37,15 @@ Orchestrator 型 Skill。
 1. `$ARGUMENTS` が `.kiro/specs/` に存在する feature 名 → **再開モード**。
    `spec.json` の `phase` / `approvals` と `.kiro/orchestration/<feature>/log.md` から現在地を判定し、
    未完了の最初のフェーズから続行する
-2. それ以外の文字列 → **新規モード**。説明文として Phase 1 から開始する
+2. それ以外の文字列 → **新規モード**。ただし Phase 1 に進む前に**マルチ Spec 判定**を行う:
+   説明文が「requirements → design → tasks → 実装を他と独立に回せる単位」を 2 つ以上含む場合は
+   Phase 1 に進まず、`/kiro:spec-split`（分割方針を議論したセッション内で実行）→ `/clear` →
+   `/kiro:spec-init-batch` の経路を案内して停止する。判定に迷う場合は Step 4 の確認手順で
+   分割の要否をユーザーに確認する。ただしこの時点では feature 名も進行ログも未作成のため、
+   `references/confirmation-channels.md` の**設計ルール 5（pre-log confirmation）**に従い
+   `feature: (未確定)` / `gate: none` で組み立て、回答は Step 2 のログ作成時に
+   `## Pre-flight: マルチ Spec 判定` エントリとして記録する（分割経路へ抜けてログを作らない場合は
+   完了報告に明記する）。単一 Spec と判定したら Phase 1 から開始する
 3. オプション:
    - `--stop-after <phase>`: 指定フェーズのゲート通過後に停止して報告
      （実装前に止めたい場合は `--stop-after tasks`、PR を作らない場合は `--stop-after implementation`）
@@ -47,8 +55,9 @@ Orchestrator 型 Skill。
 ### Step 2: 進行ログの初期化
 
 `.kiro/orchestration/<feature>/log.md` を `templates/orchestration-log.md` から作成する
-（新規モードでは feature 名が確定する spec-init 直後に作成し、Phase 1 と Gate S の結果を
-最初のエントリとして記録する。再開モードでは既存ログを読み、追記を続ける）。
+（新規モードでは feature 名が確定する spec-init 直後に作成する。記録順は
+**(1) Step 1 でマルチ Spec 判定を確認していれば `## Pre-flight` エントリ → (2) Phase 1 と Gate S の結果**。
+確認していなければ Pre-flight 節は作らない。再開モードでは既存ログを読み、追記を続ける）。
 以降、各フェーズ完了ごとに追記する:
 
 - フェーズ名 / 実行コマンド / 結果サマリ（1〜3行）
@@ -72,10 +81,21 @@ Orchestrator 型 Skill。
 
 **Gate S（着手前スコープ確認）**: 新規モードでは spec-init 完了直後に、**必ず 1 回**ユーザーに
 スコープ確認を行う（承認代行の対象外。Step 4 と同じ確認手順を使う）。確認内容: 生成された
-feature 名 / 解釈したスコープの要約（含む・含まない）/ brownfield 判定 / 停止予定フェーズ。
-ユーザーが修正を指示したら説明を修正して spec-init からやり直す。**この確認を通過したら、
-以降のゲートはポリシーに基づく代行モードで進む**（記事の「最終確認後は全自動」に相当）。
-再開モードでは進行ログに Gate S 通過記録があればスキップする。
+feature 名 / 解釈したスコープの要約（含む・含まない）/ 単一 Spec としての妥当性
+（複数 Spec に分割すべき規模でないか）/ brownfield 判定 / 停止予定フェーズ。
+選択肢は `references/approval-policy.md` の Gate S 節に従う。「続行」「中止」以外の回答は
+次の 2 系統に分けて扱う:
+
+- **スコープ修正**（単一 Spec のまま範囲を直す）→ 説明を修正して spec-init からやり直し、再度 Gate S を行う
+- **「複数 Spec に分割すべき」**（Step 1 の事前判定が誤りだった場合）→ **spec-init からやり直してはならない**。
+  オーケストレーションをここで停止し、`/kiro:spec-split` → `/clear` → `/kiro:spec-init-batch` の経路へ誘導する。
+  このとき spec-init が作成済みのスタブ（`.kiro/specs/<feature>/` の spec.json と requirements.md のみ。
+  ユーザー入力を含まないテンプレート展開物）を**削除する**（残すと spec-init-batch の一意性チェックで
+  `-2` サフィックスのゴミディレクトリが生えるため）。進行ログを作成済みなら停止理由を追記し、
+  未作成なら完了報告に確認内容・回答・削除したパスを明記する
+
+**この確認を通過したら、以降のゲートはポリシーに基づく代行モードで進む**
+（記事の「最終確認後は全自動」に相当）。再開モードでは進行ログに Gate S 通過記録があればスキップする。
 
 **Phase 5 の前処理**: 現在のブランチがデフォルトブランチ（main 等）の場合、実装コミットを
 直接積まないよう `feature/<feature-name>` ブランチを作成して切り替えてから spec-run を実行する。

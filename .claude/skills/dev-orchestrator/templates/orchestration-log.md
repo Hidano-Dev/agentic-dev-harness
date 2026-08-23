@@ -7,6 +7,18 @@
 
 <!-- 以下、各フェーズ完了ごとに追記する。既存エントリは書き換えない -->
 
+<!--
+  Pre-flight: 新規モードの Step 1 でマルチ Spec 判定をユーザーに確認した場合のみ、
+  Phase エントリより前に 1 回だけ記録する（confirmation-channels.md 設計ルール 5）。
+  確認しなかった場合はこの節ごと省略する。
+-->
+
+## Pre-flight: マルチ Spec 判定 — {{TIMESTAMP}}
+
+- Question: {{QUESTION}}
+- Answer: {{ANSWER}}
+- Decision: {{DECISION}} <!-- 許容値: single-spec | split -->
+
 ## Phase {{PHASE_NUMBER}}: {{PHASE_NAME}} — {{TIMESTAMP}}
 
 - Command: `{{COMMAND}}`

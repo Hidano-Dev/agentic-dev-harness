@@ -13,12 +13,21 @@ Orchestrator からユーザーへの**すべての**確認（エスカレーシ
 3. 回答を受け取ったら、リクエストと回答の両方を進行ログに記録してから処理を再開する
 4. 回答が得られない限り先へ進まない（タイムアウト時のデフォルト動作は将来のチャネル用
    フィールドであり、現行の claude チャネルでは使わない）
+5. **例外 — 進行ログ作成前の確認（pre-log confirmation）**: feature 名が未確定で
+   `.kiro/orchestration/<feature>/log.md` がまだ存在しない時点の確認（Step 1 のマルチ Spec 判定）は、
+   `feature: (未確定)` / `gate: none` で組み立ててよい。この場合はルール 3 を次のように読み替える:
+   - 単一 Spec と確定して Phase 1 へ進む場合 → 回答を保持し、Step 2 で進行ログを作成した時点で
+     `templates/orchestration-log.md` の **`## Pre-flight: マルチ Spec 判定` 節**（Phase エントリより前）に
+     リクエストと回答を記録する
+   - 分割経路へ抜けて進行ログを作成しない場合 → 完了報告にリクエストと回答をそのまま明記する
+
+   記録先が存在しないことを理由に、確認内容と回答の記録を省略してはならない。
 
 ## 確認リクエスト形式（ConfirmationRequest）
 
 ```yaml
 type: confirm | notify        # confirm = 回答が必要 / notify = 報告のみ
-feature: <feature-name>
+feature: <feature-name>       # 未確定の時点（設計ルール 5）では `(未確定)`
 gate: S | A | B | C | D | E | none    # 対応するゲート（フェーズ外のエラー等は none）
 title: <1行の件名>
 context: |
