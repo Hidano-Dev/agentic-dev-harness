@@ -30,12 +30,17 @@ If `$ARGUMENTS` is empty, abort and instruct the user: `Usage: /kiro:spec-init-d
 
 ### Multi-Spec Guard
 
-Before anything else, judge whether the description contains **two or more units that could each run requirements → design → tasks → implementation independently**. If so, abort WITHOUT creating any files:
+Before anything else, judge how many **units that could each run requirements → design → tasks → implementation independently** the description contains. Decide before any file write, and branch on all three outcomes:
 
-```
-❌ この依頼は複数の Spec にまたがります。分割方針を議論したセッション内で /kiro:spec-split を実行し、
-/clear 後に /kiro:spec-init-batch で各 Spec を初期化してください。
-```
+- **Clearly one** → continue to Progress Tracking
+- **Clearly two or more** → abort WITHOUT creating any files:
+
+  ```
+  ❌ この依頼は複数の Spec にまたがります。分割方針を議論したセッション内で /kiro:spec-split を実行し、
+  /clear 後に /kiro:spec-init-batch で各 Spec を初期化してください。
+  ```
+
+- **Ambiguous** (cannot confidently say one or many — e.g.「管理画面と通知連携」) → do NOT guess and do NOT create any files. Present the candidate split you see (proposed feature names and a one-line scope each) and ask the user to choose, then resume per the answer (single spec → continue; split → the abort path above). This matches the 「判定に迷う場合はユーザーに確認する」 rule in `.claude/rules/sdd-workflow.md`. `AskUserQuestion` is not loaded yet at this point (it is loaded in Phase 3), so ask in plain text and wait for the reply rather than loading it just for this branch
 
 **Exception**: when invoked from `/kiro:spec-init-batch`, skip this guard — the plan document has already split the work into single-spec units (the description referencing `.kiro/multi-spec/` context is not a multi-spec signal).
 
