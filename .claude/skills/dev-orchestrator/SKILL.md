@@ -37,7 +37,11 @@ Orchestrator 型 Skill。
 1. `$ARGUMENTS` が `.kiro/specs/` に存在する feature 名 → **再開モード**。
    `spec.json` の `phase` / `approvals` と `.kiro/orchestration/<feature>/log.md` から現在地を判定し、
    未完了の最初のフェーズから続行する
-2. それ以外の文字列 → **新規モード**。説明文として Phase 1 から開始する
+2. それ以外の文字列 → **新規モード**。ただし Phase 1 に進む前に**マルチ Spec 判定**を行う:
+   説明文が「requirements → design → tasks → 実装を他と独立に回せる単位」を 2 つ以上含む場合は
+   Phase 1 に進まず、`/kiro:spec-split`（分割方針を議論したセッション内で実行）→ `/clear` →
+   `/kiro:spec-init-batch` の経路を案内して停止する。判定に迷う場合は Step 4 の確認手順で
+   分割の要否をユーザーに確認する。単一 Spec と判定したら Phase 1 から開始する
 3. オプション:
    - `--stop-after <phase>`: 指定フェーズのゲート通過後に停止して報告
      （実装前に止めたい場合は `--stop-after tasks`、PR を作らない場合は `--stop-after implementation`）
@@ -72,7 +76,8 @@ Orchestrator 型 Skill。
 
 **Gate S（着手前スコープ確認）**: 新規モードでは spec-init 完了直後に、**必ず 1 回**ユーザーに
 スコープ確認を行う（承認代行の対象外。Step 4 と同じ確認手順を使う）。確認内容: 生成された
-feature 名 / 解釈したスコープの要約（含む・含まない）/ brownfield 判定 / 停止予定フェーズ。
+feature 名 / 解釈したスコープの要約（含む・含まない）/ 単一 Spec としての妥当性
+（複数 Spec に分割すべき規模でないか）/ brownfield 判定 / 停止予定フェーズ。
 ユーザーが修正を指示したら説明を修正して spec-init からやり直す。**この確認を通過したら、
 以降のゲートはポリシーに基づく代行モードで進む**（記事の「最終確認後は全自動」に相当）。
 再開モードでは進行ログに Gate S 通過記録があればスキップする。

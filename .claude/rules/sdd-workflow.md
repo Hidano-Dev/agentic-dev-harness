@@ -20,8 +20,16 @@ Kiro-style Spec-Driven Development on an agentic SDLC
 ## Development Guidelines
 - Think in English, generate responses in Japanese. All Markdown content written to project files (e.g., requirements.md, design.md, tasks.md, research.md, validation reports) MUST be written in the target language configured for this specification (see spec.json.language).
 
+## Scale Routing（spec 作業の着手前に必ず判定）
+依頼内容が「requirements → design → tasks → 実装を他と独立に回せる単位（= 1 Spec）」を何個含むかを最初に判定する:
+- **単一 Spec** → 下記 Minimal Workflow へ（`/dev-orchestrator`、`/kiro:spec-init-dig`、または Phase 1 を個別実行）
+- **複数 Spec にまたがる** → `/kiro:spec-init` / `/kiro:spec-init-dig` に**直行しない**。分割方針を議論したセッション内で `/kiro:spec-split` を実行し、`/clear` 後に `/kiro:spec-init-batch` で各 Spec を初期化する
+- 判定に迷う場合は分割の要否をユーザーに確認する
+
 ## Minimal Workflow
 - Full auto: `/dev-orchestrator "description"` — spec-init から実装・PR 作成までを自動オーケストレーション（着手前にスコープ確認を 1 回行い、以降の承認はポリシーに基づき代行。人間の判断が必要なものだけ確認。詳細: `.claude/skills/dev-orchestrator/SKILL.md`）
+- One-shot spec: `/kiro:spec-init-dig "description"` — init から tasks まで一括（dig インタビュー・検証ゲート付き）
+- Multi-spec: `/kiro:spec-split`（ブレストしたセッション内）→ `/clear` → `/kiro:spec-init-batch` — 複数 Spec への分割とバッチ初期化
 - Phase 0 (optional): `/kiro:steering`, `/kiro:steering-custom`
 - Phase 1 (Specification):
   - `/kiro:spec-init "description"`

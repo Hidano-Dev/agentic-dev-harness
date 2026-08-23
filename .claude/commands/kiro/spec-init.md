@@ -1,5 +1,5 @@
 ---
-description: Initialize a new specification with detailed project description
+description: Initialize a new specification for a single feature (work spanning multiple independent features must go through /kiro:spec-split → /kiro:spec-init-batch instead)
 allowed-tools: Bash, Read, Write, Glob
 argument-hint: <project-description>
 ---
@@ -19,6 +19,7 @@ argument-hint: <project-description>
 Generate a unique feature name from the project description ($ARGUMENTS) and initialize the specification structure.
 
 ## Execution Steps
+0. **Multi-Spec Guard**: Judge whether $ARGUMENTS contains **two or more units that could each run requirements → design → tasks → implementation independently**. If so, abort WITHOUT creating any files and instruct the user to run `/kiro:spec-split` (in the session where the split was discussed), then `/kiro:spec-init-batch` after `/clear`. Skip this guard only when the invocation comes from an orchestrator that has already performed its own multi-spec check (e.g. dev-orchestrator Step 1)
 1. **Check Uniqueness**: Verify `.kiro/specs/` for naming conflicts (append number suffix if needed)
 2. **Create Directory**: `.kiro/specs/[feature-name]/`
 3. **Initialize Files Using Templates**:
