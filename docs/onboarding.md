@@ -71,9 +71,9 @@ claude.ai/code/routines(または Claude Code の `/schedule`)で作成する。
 | 名前 | 例: `自律駆動ハーネス (<repo>)` |
 | cron | 1 時間間隔(Routine の最小間隔)。例: `52 * * * *`(UTC) |
 | ソース | `https://github.com/<owner>/<repo>` |
-| プロンプト | `.claude/skills/linear-worker/templates/routine-prompt.md` の本文。`{{GITHUB_REPO}}` と `{{LINEAR_TEAM}}` を置換 |
+| プロンプト | `.claude/skills/linear-worker/templates/routine-prompt.md` の `---` 以下をそのまま貼る(置換箇所なし。全リポジトリ同文なのでメモアプリ等に保存して使い回せる。対象リポジトリは Routine のソース、チームは config.json から決まる) |
 | MCP コネクタ | Linear(必須)。Notion 等は任意 |
-| 許可ツール | Bash / Read / Write / Edit / Glob / Grep / WebFetch / WebSearch |
+| 許可ツール | Bash / Read / Write / Edit / Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-impl` `/kiro:spec-impl` の起動に必要な Skill / SlashCommand / Task(Agent) |
 | 通知 | push 通知を有効にしておくと空振り・駐機の報告が届く |
 
 作成後に 1 回手動実行し、ログで「config を読んだ → キューを確認した → 空振りまたは着手」の
