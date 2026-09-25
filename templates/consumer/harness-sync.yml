@@ -1,0 +1,62 @@
+# =============================================================================
+# harness アセット同期ワークフロー(取り込み側リポジトリに置く)
+# -----------------------------------------------------------------------------
+# 手動実行(workflow_dispatch)で agentic-dev-harness の最新 main から
+# SDD ワークフロー + linear-worker 一式(.claude / .codex / .kiro / .agents / AGENTS.md)を
+# 取り込み直す。差分がある時だけ "chore: sync harness assets" としてコミットする。
+#
+# - ルート CLAUDE.md には触れない(プロジェクト固有メモは無傷。
+#   SDD メモは CLAUDE.md 内の @.claude/rules/sdd-workflow.md import で参照)
+# - コピーはファイル単位の上書きマージ。プロジェクト側で独自に追加した
+#   ファイル(.claude/settings.json、.kiro/specs、.kiro/steering、
+#   .kiro/orchestration/config.json 等)は残る。harness 側で削除された
+#   ファイルは自動では消えないため、必要なら手動で削除する
+# - AGENTS.md にプロジェクト固有の追記がある場合は SYNC_PATHS から外す
+# - 取り込み元が public リポジトリなのでトークン不要。private にする場合は
+#   checkout 用の PAT を secret に置き、clone URL に埋め込む
+#
+# 配置先: .github/workflows/harness-sync.yml
+# =============================================================================
+name: Harness Sync
+
+on:
+  workflow_dispatch:
+  # 定期的に追従したい場合は以下を有効化
+  # schedule:
+  #   - cron: '0 21 * * 0'   # 毎週月曜 06:00 JST
+
+env:
+  # 配布元(agentic-dev-harness)
+  HARNESS_REPO: Hidano-Dev/agentic-dev-harness
+  HARNESS_REF: main
+  # 取り込むパス(空白区切り)。AGENTS.md に独自追記があるリポジトリでは外す
+  SYNC_PATHS: ".claude .codex .kiro .agents AGENTS.md"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import latest harness assets
+        run: |
+          git clone --depth 1 --branch "$HARNESS_REF" --single-branch "https://github.com/${HARNESS_REPO}.git" /tmp/harness
+          for p in $SYNC_PATHS; do
+            if [ -e "/tmp/harness/$p" ]; then
+              cp -rf "/tmp/harness/$p" ./
+            else
+              echo "::warning::$p は配布元に存在しないためスキップしました"
+            fi
+          done
+          rm -rf /tmp/harness
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: sync harness assets"
+          git push

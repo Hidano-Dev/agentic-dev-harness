@@ -98,7 +98,12 @@ feature 名 / 解釈したスコープの要約（含む・含まない）/ 単�
 （記事の「最終確認後は全自動」に相当）。再開モードでは進行ログに Gate S 通過記録があればスキップする。
 
 **Phase 5 の前処理**: 現在のブランチがデフォルトブランチ（main 等）の場合、実装コミットを
-直接積まないよう `feature/<feature-name>` ブランチを作成して切り替えてから spec-run を実行する。
+直接積まないよう作業ブランチを作成して切り替えてから spec-run を実行する。ブランチ名は
+`.claude/rules/git-workflow.md` の命名規約に従う: `.kiro/orchestration/config.json` に Linear 連携
+（`linear.team`）が設定されていれば `feature/<issue-id>-<feature-name>`（`<issue-id>` は対応する
+Linear Issue の識別子の小文字。未起票なら先に Linear へ起票する）とし、ブランチ作成後に Linear MCP で
+対応 Issue を In Progress に更新する（ローカルのブランチ作成は Linear に検知されず、push は Phase 6 まで
+行わないため）。Linear 連携が無ければ `feature/<feature-name>`。
 すでに作業ブランチ上ならそのまま使う。使用ブランチ名を進行ログに記録する。
 
 **Phase 6（PR 作成）の手順**:

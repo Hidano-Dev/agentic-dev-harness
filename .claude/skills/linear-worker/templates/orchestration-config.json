@@ -1,0 +1,37 @@
+{
+  "$comment": "配置先: .kiro/orchestration/config.json(リポジトリごとに 1 つ。dev-orchestrator の confirmation_channel と同居する)。linear-worker はこのファイルが無いと起動しない。",
+  "confirmation_channel": "claude",
+  "linear": {
+    "team": "<Linear チーム名>",
+    "project": null,
+    "labels": {
+      "needs_human": "needs-human",
+      "needs_local": "needs-local"
+    }
+  },
+  "github": {
+    "repo": "<owner>/<repo>",
+    "default_branch": "main"
+  },
+  "checks": {
+    "fast": []
+  },
+  "review": {
+    "bot": {
+      "name": "codex",
+      "summary_marker": "codex-pull-request-review-summary",
+      "retrigger_comment": "@codex review"
+    },
+    "wait_minutes": 60
+  },
+  "worker": {
+    "max_candidates": 5,
+    "claim_stale_hours": 24,
+    "backlog_doc": "docs/backlog.md"
+  },
+  "auto_merge": {
+    "enabled": false,
+    "method": "merge",
+    "protected_paths": [".claude/", ".github/", ".kiro/settings/"]
+  }
+}

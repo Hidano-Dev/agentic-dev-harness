@@ -1,0 +1,50 @@
+# 実行リポジトリ台帳
+# -----------------------------------------------------------------------------
+# 本リポジトリの配布物(SDD ワークフロー + linear-worker)を取り込んでいるリポジトリと、
+# その上で動く Routine(定期実行)の一覧。配布物には含まれない(台帳専用)。
+#
+# フィールド:
+#   github        … owner/name
+#   role          … execution(実行リポジトリ) | template(生成テンプレート。自身は実行しない)
+#   sync          … workflow(取り込み側の同期ワークフローで追従) | manual(手動コピー) | template-init(生成時のみ)
+#   harness       … linear-worker を動かしているか。null なら SDD 配布物のみ
+#     config      … .kiro/orchestration/config.json の有無(true / false / pending)
+#     linear      … チーム / プロジェクト
+#     routine     … claude.ai/code/routines 上の Routine(名前・cron は UTC・ID)
+#     status      … pilot(試験運用) | active | paused
+#   notes         … 台帳を読む人向けの補足
+# -----------------------------------------------------------------------------
+
+repos:
+  - name: unity-renderer
+    github: Hidano-Dev/unity-renderer
+    role: execution
+    sync: manual
+    harness:
+      config: pending   # 現状は linear-worker に値を直書きした旧版が稼働中。config.json 化と配布版への差し替えは別作業
+      linear:
+        team: Hidano
+        project: unity-renderer
+        labels:
+          needs_human: needs-human
+          needs_local: needs-unity
+      routine:
+        name: 自律駆動ハーネス
+        cron: "52 * * * *"   # 毎時 52 分(UTC)
+        id: trig_015wYjcF8kMmMqE9NqDLJWkj
+        connectors: [Linear, Notion, Claude-Docs]
+      status: pilot
+    notes: >-
+      ハーネスの試験実装リポジトリ(2026-09-23〜)。配布物のうち kiro commands / dev-orchestrator は
+      2026-08-22 時点の版から独自改修されており、本リポジトリの版とは差分がある。
+      AGENTS.md に artgraph の節を追記しているため、同期時は AGENTS.md を対象から外すこと。
+
+  - name: unity-sdd-template
+    github: Hidano-Dev/unity-sdd-template
+    role: template
+    sync: template-init   # 生成先リポジトリが template-init.yml / orchestration-sync.yml で取り込む
+    harness: null
+    notes: >-
+      新規 Unity プロジェクト用の GitHub テンプレート。テンプレート自身は配布物を持たず、
+      生成先リポジトリが本リポジトリの main から取り込む。生成先で linear-worker を動かす場合は
+      docs/onboarding.md の手順で config.json と Routine を追加する。
