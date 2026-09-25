@@ -3,6 +3,19 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-09-25 — Routine プロンプト雛形からプレースホルダを廃止
+
+- `.claude/skills/linear-worker/templates/routine-prompt.md` — `{{GITHUB_REPO}}` / `{{LINEAR_TEAM}}` を
+  無くし、`---` 以下をそのまま貼れる同文にした。対象リポジトリは Routine のソース設定、Linear の
+  チーム / プロジェクトは `.kiro/orchestration/config.json` から決まるため、プロンプトに書く必要がない。
+  推奨許可ツールに Skill / SlashCommand / Task を追加(§4 一次ゲートの `/code-review` 等を起動するため)
+- `docs/onboarding.md` — 手順 5 のプロンプト・許可ツールの説明を上記に合わせた
+
+**取り込み側で必要な手動追従**
+
+- 既存の Routine のプロンプトを新しい本文に貼り替える(旧プロンプトのままでも動作は同じ。
+  `linear.team` の有無を前提ガードに含めた点だけが差分)
+
 ## 2026-09-25 — agentic-dev-harness として再編
 
 orchestration-development-template を履歴ごと引き継ぎ、以下を追加・変更した。
