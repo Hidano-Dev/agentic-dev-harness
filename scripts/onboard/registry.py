@@ -16,12 +16,29 @@ import re
 import sys
 from pathlib import Path
 
-ENTRY_RE = re.compile(r"^  - name: (?P<name>\S+)\s*$", re.M)
+# name / github は plain scalar か、予約語・数値に見える場合はダブルクォートで書く。
+# 読み取り側は両方の書式を受け付ける(リポジトリ名に " や \ は使えない)
+ENTRY_RE = re.compile(r'^  - name: "?(?P<name>[^"\s]+)"?\s*$', re.M)
+GITHUB_RE = re.compile(r'^    github: "?(?P<github>[^"\s]+)"?\s*$', re.M)
+YAML_RESERVED = {"null", "~", "true", "false", "yes", "no", "on", "off", "y", "n"}
 
 
 def yaml_str(s: str) -> str:
     """値をダブルクォートの YAML スカラーにする(日本語・記号を安全に)。"""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def yaml_name(s: str) -> str:
+    """リポジトリ名など識別子向け: 文字列として曖昧でなければ plain、そうでなければ引用する。
+
+    `null` / `true` / `1e3` / `0x1f` のような名前は GitHub では有効だが YAML では別の型に
+    読まれるため引用する。
+    """
+    if re.fullmatch(r"[A-Za-z0-9._/-]+", s) and s.lower() not in YAML_RESERVED and not re.fullmatch(
+        r"[-+]?(\d[\d_]*\.?\d*(e[-+]?\d+)?|\.\d+|0x[0-9a-f]+|0o?[0-7]+|\.inf|\.nan)", s, re.I
+    ):
+        return s
+    return yaml_str(s)
 
 
 def render_entry(a: argparse.Namespace) -> str:
@@ -49,8 +66,8 @@ def render_entry(a: argparse.Namespace) -> str:
         notes += " " + a.notes.strip()
     if a.sdd_only:
         return f"""
-  - name: {a.name}
-    github: {a.github}
+  - name: {yaml_name(a.name)}
+    github: {yaml_name(a.github)}
     role: execution
     sync: {a.sync}   # {sync_comment}
     harness: null   # linear-worker を動かす場合は Onboard Repository を linear_team 付きで再実行
@@ -58,8 +75,8 @@ def render_entry(a: argparse.Namespace) -> str:
       {notes}
 """
     return f"""
-  - name: {a.name}
-    github: {a.github}
+  - name: {yaml_name(a.name)}
+    github: {yaml_name(a.github)}
     role: execution
     sync: {a.sync}   # {sync_comment}
     harness:
@@ -89,9 +106,6 @@ def find_block(text: str, name: str) -> tuple[int, int]:
             end = starts[i + 1][0] if i + 1 < len(starts) else len(text)
             return pos, end
     raise SystemExit(f"::error::台帳にエントリ '{name}' が無い")
-
-
-GITHUB_RE = re.compile(r"^    github: (?P<github>\S+)\s*$", re.M)
 
 
 def entry_github(text: str, name: str) -> str | None:

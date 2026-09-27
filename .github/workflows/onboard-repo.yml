@@ -160,8 +160,9 @@ jobs:
           NAME: ${{ steps.target.outputs.name }}
           REPO: ${{ steps.target.outputs.repo }}
         run: |
-          # 台帳は常に既定ブランチ版を見る(作業ブランチ / tag から dispatch されても古い台帳で判定しない)
-          git fetch -q origin "$REGISTRY_BRANCH"
+          # 台帳は常に既定ブランチ版を見る(作業ブランチ / tag から dispatch されても古い台帳で判定しない)。
+          # checkout の fetch refspec に依存せず、明示的に origin/<既定ブランチ> を作る
+          git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
           git show "origin/$REGISTRY_BRANCH:registry/repos.yaml" > /tmp/repos-default.yaml
           python3 scripts/onboard/registry.py --file /tmp/repos-default.yaml check --name "$NAME" --github "$REPO"
 
@@ -334,7 +335,7 @@ jobs:
           attempt=0
           while :; do
             attempt=$((attempt + 1))
-            git fetch -q origin "$REGISTRY_BRANCH"
+            git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
             git reset -q --hard "origin/$REGISTRY_BRANCH"
             if [ "$SDD_ONLY" = "true" ]; then
               python3 scripts/onboard/registry.py add --sdd-only \

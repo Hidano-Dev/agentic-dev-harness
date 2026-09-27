@@ -237,6 +237,13 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
             f"既存の {CONFIG_DEST} が対象リポジトリと一致しない: " + "; ".join(mismatches)
             + "。config を修正してから再実行すること"
         )
+    # linear.team は linear-worker の必須設定であり、台帳登録にも使う。空のまま先へ進むと
+    # 対象だけ変更して台帳登録で失敗するので、コピー前にここで止める
+    team = (cfg.get("linear") or {}).get("team") if isinstance(cfg, dict) else None
+    if not isinstance(team, str) or not team.strip():
+        raise RuntimeError(
+            f"既存の {CONFIG_DEST} に linear.team が無い(または空)。config を修正してから再実行すること"
+        )
 
 
 def effective_config(target: Path) -> dict:

@@ -75,7 +75,7 @@ jobs:
           until git push origin "HEAD:$REGISTRY_BRANCH"; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge 5 ]; then echo "::error::push が競合し続けています"; exit 1; fi
-            git fetch -q origin "$REGISTRY_BRANCH"
+            git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
             git reset -q --hard "origin/$REGISTRY_BRANCH"
             python3 scripts/onboard/registry.py update \
               --name "$NAME" --routine-id "$ROUTINE_ID" --config "$CONFIG" --status "$STATUS"
