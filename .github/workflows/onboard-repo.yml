@@ -1,0 +1,298 @@
+# =============================================================================
+# Onboard Repository — 新しいリポジトリへのハーネス導入を 1 回のフォーム入力で行う
+# -----------------------------------------------------------------------------
+# Actions タブから手動実行(workflow_dispatch)。docs/onboarding.md の手順のうち
+# 「ファイルのコピー・項目埋め・台帳登録」に当たる部分を代行する:
+#
+#   1. Linear: チーム / プロジェクトの存在確認、needs-human / needs-local ラベルの作成
+#      (secret LINEAR_API_KEY がある場合のみ。無ければスキップ)
+#   2. 対象リポジトリ: 配布物(.claude .codex .kiro .agents [AGENTS.md])の同期、
+#      harness-sync.yml の配置、CLAUDE.md への import 行、.kiro/orchestration/config.json の
+#      生成 → PR を作成(または default branch へ直接 push)
+#   3. 本リポジトリ: registry/repos.yaml にエントリを追加してコミット
+#   4. ジョブサマリに「残りの手作業」と Routine 設定シート(プロンプト本文込み)を出力
+#
+# linear_team を空欄にすると「SDD ワークフローのみ」の導入になる(config.json を作らず、
+# Linear・Routine 関連はすべて省略。台帳には harness: null で登録)。
+#
+# 必要な secret(本リポジトリの Settings → Secrets and variables → Actions):
+#   HARNESS_ONBOARD_TOKEN … 対象リポジトリへ書き込める fine-grained PAT
+#                           (Contents: Read/Write, Pull requests: Read/Write,
+#                            Workflows: Read/Write, Metadata: Read)。
+#                           Workflows 権限は .github/workflows/ 配下を push するのに必要
+#   LINEAR_API_KEY        … 任意。Linear の個人 API キー(ラベル作成・存在確認に使う)
+#
+# 冪等: 同じリポジトリに再実行しても、既存の config.json / CLAUDE.md の import /
+# 台帳エントリは上書きしない(配布物の同期のみ毎回行う)。
+# =============================================================================
+name: Onboard Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: '対象リポジトリ(owner/name)'
+        required: true
+        type: string
+      linear_team:
+        description: 'Linear チーム名(config の linear.team)。空欄なら SDD ワークフローのみ導入(linear-worker なし)'
+        required: false
+        type: string
+        default: ''
+      linear_project:
+        description: 'Linear プロジェクト名(絞らないなら空欄)'
+        required: false
+        type: string
+        default: ''
+      needs_local_label:
+        description: '「ローカル環境・実機が必要」ラベル名(例: needs-unity)'
+        required: false
+        type: string
+        default: 'needs-local'
+      checks_fast:
+        description: '一次ゲートのローカルチェック(カンマ区切り。例: pnpm lint, pnpm test)'
+        required: false
+        type: string
+        default: ''
+      review_bot:
+        description: '外部レビューボット'
+        required: false
+        type: choice
+        options: [codex, none]
+        default: codex
+      sync_agents_md:
+        description: 'AGENTS.md も配布・同期する(対象に独自の AGENTS.md があるなら外す)'
+        required: false
+        type: boolean
+        default: true
+      direct_push:
+        description: 'PR を作らずデフォルトブランチへ直接 push する'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: onboard-${{ inputs.target_repo }}
+  cancel-in-progress: false
+
+env:
+  TARGET_REPO: ${{ inputs.target_repo }}
+  LINEAR_TEAM: ${{ inputs.linear_team }}
+  LINEAR_PROJECT: ${{ inputs.linear_project }}
+  NEEDS_LOCAL: ${{ inputs.needs_local_label }}
+  CHECKS_FAST: ${{ inputs.checks_fast }}
+  REVIEW_BOT: ${{ inputs.review_bot }}
+  SYNC_AGENTS_MD: ${{ inputs.sync_agents_md }}
+  DIRECT_PUSH: ${{ inputs.direct_push }}
+  SDD_ONLY: ${{ inputs.linear_team == '' }}
+  ONBOARD_BRANCH: chore/harness-onboarding
+  ROUTINE_CRON: '52 * * * *'
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # registry/repos.yaml のコミット(本リポジトリ)
+    env:
+      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+    defaults:
+      run:
+        shell: bash   # -eo pipefail(`python ... | tee` の失敗を取りこぼさない)
+    steps:
+      - name: Check inputs and secrets
+        env:
+          PAT: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::error::secret HARNESS_ONBOARD_TOKEN が未設定です(対象リポジトリへ書き込める fine-grained PAT。冒頭コメント参照)"
+            exit 1
+          fi
+          case "$TARGET_REPO" in
+            */*) ;;
+            *) echo "::error::target_repo は owner/name 形式で指定してください: '$TARGET_REPO'"; exit 1 ;;
+          esac
+          if [ "$SDD_ONLY" = "true" ]; then
+            echo "::notice::linear_team が空欄のため SDD ワークフローのみ導入します(config.json / Linear / Routine は省略)"
+          fi
+
+      - name: Checkout harness (this repository)
+        uses: actions/checkout@v4
+
+      - name: Resolve target repository
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
+        run: |
+          json=$(gh repo view "$TARGET_REPO" --json nameWithOwner,defaultBranchRef,isTemplate) || {
+            echo "::error::'$TARGET_REPO' を参照できません(存在しないか、PAT に権限がありません)"; exit 1; }
+          repo=$(jq -r .nameWithOwner <<<"$json")
+          branch=$(jq -r .defaultBranchRef.name <<<"$json")
+          if [ "$(jq -r .isTemplate <<<"$json")" = "true" ]; then
+            echo "::error::'$repo' はテンプレートリポジトリです。生成先のリポジトリを指定してください"; exit 1
+          fi
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "name=${repo##*/}" >> "$GITHUB_OUTPUT"
+          echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "対象: $repo(default: $branch)"
+
+      - name: Linear — verify team/project and ensure labels
+        id: linear
+        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''
+        run: |
+          python3 scripts/onboard/linear_setup.py \
+            --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
+            --needs-human needs-human --needs-local "$NEEDS_LOCAL" | tee /tmp/linear.log
+          echo "note=$(paste -sd '/' /tmp/linear.log | sed 's#/# / #g')" >> "$GITHUB_OUTPUT"
+
+      - name: Linear — skipped
+        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY == ''
+        run: |
+          echo "::notice::secret LINEAR_API_KEY が無いため Linear の存在確認・ラベル作成をスキップしました(手動で needs-human / $NEEDS_LOCAL ラベルを作成してください)"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          ref: ${{ steps.target.outputs.default_branch }}
+          token: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
+          path: target
+
+      - name: Bootstrap target (assets, sync workflow, CLAUDE.md, config.json)
+        id: bootstrap
+        run: |
+          python3 scripts/onboard/bootstrap_target.py \
+            --harness . --target target \
+            --repo "${{ steps.target.outputs.repo }}" \
+            --default-branch "${{ steps.target.outputs.default_branch }}" \
+            --linear-team "$LINEAR_TEAM" --linear-project "$LINEAR_PROJECT" \
+            --needs-local "$NEEDS_LOCAL" --checks-fast "$CHECKS_FAST" \
+            --review-bot "$REVIEW_BOT" --sync-agents-md "$SYNC_AGENTS_MD" \
+            --result /tmp/bootstrap.json
+          echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and open PR (or push) in target
+        id: publish
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
+          REPO: ${{ steps.target.outputs.repo }}
+          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/onboarding.md
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "変更なし(導入済み)"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          if [ "$SDD_ONLY" = "true" ]; then
+            git commit -m "chore: onboard agentic-dev-harness (SDD workflow)"
+          else
+            git commit -m "chore: onboard agentic-dev-harness (SDD workflow + linear-worker)"
+          fi
+
+          if [ "$DIRECT_PUSH" = "true" ]; then
+            git push origin "HEAD:$DEFAULT_BRANCH"
+            echo "pushed_to=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          existing=$(gh pr list -R "$REPO" --head "$ONBOARD_BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "::error::導入 PR が既に開いています: $existing — 先にマージまたはクローズしてください"
+            exit 1
+          fi
+          git checkout -b "$ONBOARD_BRANCH"
+          git push --force -u origin "$ONBOARD_BRANCH"
+
+          {
+            if [ "$SDD_ONLY" = "true" ]; then
+              echo "agentic-dev-harness の SDD ワークフロー(kiro commands / skills / rules)を導入します。"
+            else
+              echo "agentic-dev-harness(SDD ワークフロー + Linear 駆動の自律ワーカー linear-worker)を導入します。"
+            fi
+            echo "[Onboard Repository]($RUN_URL) ワークフローが生成した PR です。"
+            echo
+            echo "## 内容"
+            echo
+            echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
+            case "$(jq -r .sync_mode /tmp/bootstrap.json)/$(jq -r .sync_workflow_written /tmp/bootstrap.json)" in
+              workflow/true)   echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
+              template-init/*) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
+              *)               echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
+            esac
+            echo "- \`CLAUDE.md\`: $(jq -r .claude_md /tmp/bootstrap.json)(\`@.claude/rules/sdd-workflow.md\` の import)"
+            echo "- \`.kiro/orchestration/config.json\`: $(jq -r .config /tmp/bootstrap.json)"
+            if [ "$SDD_ONLY" != "true" ]; then
+              echo
+              echo "## マージ前に確認すること"
+              echo
+              echo "- \`config.json\` の値(linear.team / project / labels / checks.fast / review.bot)"
+              echo "- \`auto_merge.enabled\` は false のまま。ゲートの動きを数回確認してから true にする"
+              echo "- \`checks.fast\` が空なら、CI 相当のコマンド(lint / typecheck / test)を入れる"
+            fi
+            echo
+            echo "導入手順の全体: $DOCS_URL"
+          } > /tmp/pr-body.md
+
+          url=$(gh pr create -R "$REPO" --base "$DEFAULT_BRANCH" --head "$ONBOARD_BRANCH" \
+            --title "chore: onboard agentic-dev-harness" --body-file /tmp/pr-body.md)
+          echo "pr_url=$url" >> "$GITHUB_OUTPUT"
+          echo "PR: $url"
+
+      - name: Register in registry/repos.yaml
+        id: registry
+        env:
+          NAME: ${{ steps.target.outputs.name }}
+          REPO: ${{ steps.target.outputs.repo }}
+          SYNC_MODE: ${{ steps.bootstrap.outputs.sync_mode }}
+          PR_URL: ${{ steps.publish.outputs.pr_url }}
+          PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
+        run: |
+          if [ "$SDD_ONLY" = "true" ]; then
+            python3 scripts/onboard/registry.py add --sdd-only \
+              --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
+              --date "$(date -u +%F)" --pr-url "$PR_URL" | tee /tmp/registry.log
+          else
+            if [ -n "$PUSHED_TO" ]; then config_state=true; else config_state=pending; fi
+            python3 scripts/onboard/registry.py add \
+              --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
+              --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
+              --needs-human needs-human --needs-local "$NEEDS_LOCAL" \
+              --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
+              --date "$(date -u +%F)" --pr-url "$PR_URL" | tee /tmp/registry.log
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add registry/repos.yaml
+          if git diff --cached --quiet; then
+            echo "note=$(cat /tmp/registry.log)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore(registry): add $NAME (onboarded via workflow)"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary (remaining manual steps + Routine sheet)
+        env:
+          REPO: ${{ steps.target.outputs.repo }}
+          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          PR_URL: ${{ steps.publish.outputs.pr_url }}
+          PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
+          LINEAR_NOTE: ${{ steps.linear.outputs.note }}
+          REGISTRY_NOTE: ${{ steps.registry.outputs.note }}
+        run: |
+          extra=()
+          if [ "$SDD_ONLY" = "true" ]; then extra+=(--sdd-only); fi
+          python3 scripts/onboard/routine_sheet.py \
+            --harness . --repo "$REPO" --default-branch "$DEFAULT_BRANCH" \
+            --cron "$ROUTINE_CRON" --result /tmp/bootstrap.json \
+            --pr-url "$PR_URL" --pushed-to "$PUSHED_TO" \
+            --linear-note "${LINEAR_NOTE:-スキップ(LINEAR_API_KEY 未設定)}" \
+            --registry-note "$REGISTRY_NOTE" "${extra[@]}" >> "$GITHUB_STEP_SUMMARY"

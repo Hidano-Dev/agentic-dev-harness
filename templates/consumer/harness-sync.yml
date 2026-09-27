@@ -52,6 +52,23 @@ jobs:
           done
           rm -rf /tmp/harness
 
+      # config.json は同期対象外だが、雛形のプレースホルダが残ったまま・JSON として壊れたまま
+      # だと linear-worker が誤動作するので、同期のついでに検査して警告する
+      - name: Check orchestration config
+        run: |
+          f=.kiro/orchestration/config.json
+          if [ ! -f "$f" ]; then
+            echo "::notice::$f が無いため linear-worker は起動しません(SDD ワークフローのみ)"
+            exit 0
+          fi
+          python3 -c "import json,sys; json.load(open('$f'))" \
+            || { echo "::error::$f が JSON として不正です"; exit 1; }
+          if grep -qE '"<[^"]*>"' "$f"; then
+            echo "::warning::$f に雛形のプレースホルダ(<...>)が残っています"
+          fi
+          grep -qxF '@.claude/rules/sdd-workflow.md' CLAUDE.md 2>/dev/null \
+            || echo "::warning::CLAUDE.md に '@.claude/rules/sdd-workflow.md' の import 行がありません"
+
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
