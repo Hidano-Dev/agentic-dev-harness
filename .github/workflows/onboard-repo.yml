@@ -153,6 +153,14 @@ jobs:
           echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
           echo "対象: $repo(default: $branch)"
 
+      # 対象リポジトリを変更する前に、台帳のエントリ名(リポジトリ名)が別の owner/name に
+      # 使われていないことを確認する(後段で台帳だけ登録できずに終わる事態を防ぐ)
+      - name: Check registry entry name
+        env:
+          NAME: ${{ steps.target.outputs.name }}
+          REPO: ${{ steps.target.outputs.repo }}
+        run: python3 scripts/onboard/registry.py check --name "$NAME" --github "$REPO"
+
       - name: Linear — verify team/project and ensure labels
         id: linear
         if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''

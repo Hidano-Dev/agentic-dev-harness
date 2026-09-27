@@ -55,6 +55,22 @@ def find_symlinks(dst: Path) -> list[Path]:
     return []
 
 
+def assert_regular_dest(target: Path, rel: Path) -> None:
+    """target/rel への書き込みが対象ルート内の通常ファイルに閉じることを保証する。
+
+    rel の各構成要素(途中のディレクトリを含む)がシンボリックリンクなら中止する。
+    リンクが無ければ書き込み先は固定の相対パスなので対象ルートの外には出ない。
+    """
+    cur = target
+    for part in rel.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise RuntimeError(
+                f"{cur.relative_to(target)} がシンボリックリンクのため書き込みを中止した。"
+                "リンクを外してから再実行すること"
+            )
+
+
 def copy_path(src: Path, dst: Path) -> None:
     # 同期先にシンボリックリンクがあると copy2 / copytree はリンク先へ書き込むため、
     # 対象ルートの外や無関係な追跡ファイルを上書きしかねない。リンクは拒否する
@@ -147,16 +163,20 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
     if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
         if sync_agents_md:
             return "template-init", "template-init"
+        assert_regular_dest(target, TEMPLATE_INIT_SYNC)
         action = exclude_agents_md(target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS)
         return "template-init", ("updated" if action == "updated" else "template-init")
+    assert_regular_dest(target, SYNC_DEST)
     dest = target / SYNC_DEST
     if dest.exists():
-        # 同名の無関係なワークフローを正規の同期経路と誤認しない(上書きもしない)
+        # 同名の無関係なワークフロー・古い不完全なワークフローを正規の同期経路と誤認しない
+        # (上書きもしない)。配布元の参照と、既知の SYNC_PATHS 指定のどちらかを必須にする
         text = dest.read_text(encoding="utf-8")
-        if "agentic-dev-harness" not in text or "SYNC_PATHS:" not in text:
+        if "agentic-dev-harness" not in text or (SYNC_PATHS_FULL not in text and SYNC_PATHS_NO_AGENTS not in text):
             raise RuntimeError(
-                f"{SYNC_DEST} が既に存在するが agentic-dev-harness の同期ワークフローではない"
-                "(配布元の参照または SYNC_PATHS が無い)。改名・削除してから再実行すること"
+                f"{SYNC_DEST} が既に存在するが、agentic-dev-harness の現行の同期ワークフローではない"
+                f"(配布元の参照が無い、または SYNC_PATHS が {SYNC_PATHS_FULL!r} / {SYNC_PATHS_NO_AGENTS!r} の"
+                "いずれでもない)。templates/consumer/harness-sync.yml で置き換えてから再実行すること"
             )
         if sync_agents_md:
             return "workflow", "existing"
@@ -172,6 +192,7 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
 
 
 def ensure_claude_md(target: Path) -> str:
+    assert_regular_dest(target, Path("CLAUDE.md"))
     f = target / "CLAUDE.md"
     if not f.exists():
         f.write_text(CLAUDE_MD_NEW, encoding="utf-8", newline="\n")
@@ -187,6 +208,7 @@ def ensure_claude_md(target: Path) -> str:
 def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
     if not a.linear_team.strip():
         return "skipped"  # SDD ワークフローのみ(linear-worker なし)
+    assert_regular_dest(target, CONFIG_DEST)
     dest = target / CONFIG_DEST
     if dest.exists():
         return "exists"
@@ -232,13 +254,16 @@ def main(argv: list[str] | None = None) -> int:
     sync_agents_md = str(a.sync_agents_md).lower() == "true"
 
     try:
+        # 書き込み先の事前検査(コピー前に全部見る: 途中で失敗して半端な状態を残さない)
+        for rel in (Path("CLAUDE.md"), CONFIG_DEST, SYNC_DEST, TEMPLATE_INIT_SYNC):
+            assert_regular_dest(target, rel)
         result = {"assets_synced": sync_assets(harness, target, sync_agents_md)}
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
+        result["claude_md"] = ensure_claude_md(target)
+        result["config"] = write_config(harness, target, a)
     except RuntimeError as e:
         print(f"::error::{e}", file=sys.stderr)
         return 1
-    result["claude_md"] = ensure_claude_md(target)
-    result["config"] = write_config(harness, target, a)
 
     text = json.dumps(result, ensure_ascii=False, indent=2)
     print(text)

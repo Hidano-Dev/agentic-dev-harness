@@ -4,7 +4,8 @@
 YAML ライブラリに依存せず、台帳の既存書式(コメント付き)を保ったまま
 テキストとして編集する。
 
-  add    … エントリを末尾に追加(同名エントリがあれば何もしない)
+  check  … 同名で別の owner/name を指すエントリが無いことを確認する(対象を変更する前に呼ぶ)
+  add    … エントリを末尾に追加(同じ owner/name が登録済みなら何もしない。SDD のみ → worker 付きは更新)
   update … 既存エントリの harness.config / routine.id / status を書き換える
 """
 from __future__ import annotations
@@ -89,10 +90,51 @@ def find_block(text: str, name: str) -> tuple[int, int]:
     raise SystemExit(f"::error::台帳にエントリ '{name}' が無い")
 
 
+GITHUB_RE = re.compile(r"^    github: (?P<github>\S+)\s*$", re.M)
+
+
+def entry_github(text: str, name: str) -> str | None:
+    """エントリ name の github(owner/name)を返す。"""
+    s, e = find_block(text, name)
+    m = GITHUB_RE.search(text[s:e])
+    return m.group("github") if m else None
+
+
+def name_conflict(text: str, name: str, github: str) -> str | None:
+    """同名エントリが別の owner/name を指していれば、その github を返す(無ければ None)。"""
+    if not any(m.group("name") == name for m in ENTRY_RE.finditer(text)):
+        return None
+    existing = entry_github(text, name)
+    return existing if existing != github else None
+
+
+def cmd_check(a: argparse.Namespace) -> int:
+    """対象を変更する前に呼ぶ: 同名で別リポジトリのエントリがあれば失敗する。"""
+    text = Path(a.file).read_text(encoding="utf-8")
+    other = name_conflict(text, a.name, a.github)
+    if other:
+        print(
+            f"::error::台帳のエントリ名 '{a.name}' は既に {other} が使っている。"
+            "owner が異なる同名リポジトリは、先に台帳側のエントリ名を変える(または対象を改名する)こと",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"registry: '{a.name}' は {'登録済み(' + a.github + ')' if entry_exists(text, a.name) else '未登録'}")
+    return 0
+
+
+def entry_exists(text: str, name: str) -> bool:
+    return any(m.group("name") == name for m in ENTRY_RE.finditer(text))
+
+
 def cmd_add(a: argparse.Namespace) -> int:
     path = Path(a.file)
     text = path.read_text(encoding="utf-8")
-    if any(m.group("name") == a.name for m in ENTRY_RE.finditer(text)):
+    other = name_conflict(text, a.name, a.github)
+    if other:
+        print(f"::error::台帳のエントリ名 '{a.name}' は既に {other} が使っている(今回: {a.github})", file=sys.stderr)
+        return 1
+    if entry_exists(text, a.name):
         s, e = find_block(text, a.name)
         block = text[s:e]
         # SDD のみ(harness: null)で登録済みのリポジトリに linear-worker を足す再実行なら
@@ -169,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--pr-url", default="")
     add.add_argument("--notes", default="")
     add.set_defaults(fn=cmd_add)
+
+    chk = sub.add_parser("check", help="同名で別リポジトリのエントリが無いことを確認する(対象変更前に実行)")
+    chk.add_argument("--name", required=True)
+    chk.add_argument("--github", required=True)
+    chk.set_defaults(fn=cmd_check)
 
     upd = sub.add_parser("update")
     upd.add_argument("--name", required=True)
