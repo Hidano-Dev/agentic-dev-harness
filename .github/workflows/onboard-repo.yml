@@ -71,10 +71,16 @@ on:
         type: boolean
         default: false
 
-# 注意: concurrency group は使わない。GitHub Actions の group は「実行中 1 件 + 待機 1 件」しか
-# 保持せず、3 件目以降の dispatch が待機中の run を取り消して依頼を失うため。
-# registry/repos.yaml の同時更新は、台帳ステップの「リモート最新へ reset → 追記 → push、
-# 競合したら再試行」ループで解決する(Registry Update も同じ方式)
+# 同じ対象リポジトリへの実行だけを直列化する(重複判定 → ブランチ push → PR 作成の
+# check-and-create が並行しないように)。group は対象ごとなので、別リポジトリの導入や
+# Registry Update とは並行し得るが、台帳の同時更新は台帳ステップの
+# 「既定ブランチの最新から追記 → push、競合したら再試行」ループで解決する。
+# GitHub の仕様で group ごとの待機 run は 1 件のみ(同一対象を 3 件以上ほぼ同時に
+# dispatch すると待機中の 1 件が取り消される)。同一対象の重複 dispatch は不要な操作なので許容する
+concurrency:
+  group: onboard-${{ inputs.target_repo }}
+  cancel-in-progress: false
+
 env:
   TARGET_REPO: ${{ inputs.target_repo }}
   LINEAR_TEAM: ${{ inputs.linear_team }}
@@ -180,6 +186,14 @@ jobs:
           REPO: ${{ steps.target.outputs.repo }}
           DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
         run: |
+          # 書き込み先が submodule(gitlink, mode 160000)だと、コピーしても superproject の
+          # git add には乗らず、配布物が欠けたまま成功に見えるので先に拒否する
+          gitlinks=$(git -C target ls-files --stage -- .claude .codex .kiro .agents AGENTS.md CLAUDE.md .github \
+            | awk '$1 == "160000" { print $4 }')
+          if [ -n "$gitlinks" ]; then
+            echo "::error::対象リポジトリで同期先が submodule(gitlink)になっています: $(echo "$gitlinks" | tr '\n' ' ')— 通常のディレクトリにしてから再実行してください"
+            exit 1
+          fi
           python3 scripts/onboard/bootstrap_target.py \
             --harness . --target target \
             --repo "$REPO" \
@@ -311,8 +325,10 @@ jobs:
           echo "pr_url=$url" >> "$GITHUB_OUTPUT"
           echo "PR: $url"
 
-      # 台帳更新の競合(別の Onboard / Registry Update と同時)は、リモートの最新から
-      # 台帳を作り直して push を再試行することで解決する(concurrency group は使わない。冒頭参照)
+      # 台帳更新は既定ブランチを checkout した別 worktree(/tmp/registry-wt)で行う。
+      # 実行中 ref(作業ブランチ / tag)のスクリプトはそのまま使い、既定ブランチから取るのは
+      # 台帳ファイルだけにするため。競合(別の Onboard / Registry Update と同時)は、
+      # 既定ブランチの最新から台帳を作り直して push を再試行することで解決する
       - name: Register in registry/repos.yaml
         id: registry
         env:
@@ -326,17 +342,20 @@ jobs:
           # config が既定ブランチに存在する状態(直接 push 済み、または導入前から存在)なら true、
           # 導入 PR の中で新規作成した場合はマージ待ちなので pending
           if [ -n "$PUSHED_TO" ] || [ "$CONFIG_RESULT" = "exists" ]; then config_state=true; else config_state=pending; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           date_utc=$(date -u +%F)
+          wt=/tmp/registry-wt
+          git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
+          git worktree add -q --detach "$wt" "origin/$REGISTRY_BRANCH"
+          git -C "$wt" config user.name "github-actions[bot]"
+          git -C "$wt" config user.email "github-actions[bot]@users.noreply.github.com"
 
           attempt=0
           while :; do
             attempt=$((attempt + 1))
             git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
-            git reset -q --hard "origin/$REGISTRY_BRANCH"
+            git -C "$wt" reset -q --hard "origin/$REGISTRY_BRANCH"
             if [ "$SDD_ONLY" = "true" ]; then
-              python3 scripts/onboard/registry.py add --sdd-only \
+              python3 scripts/onboard/registry.py --file "$wt/registry/repos.yaml" add --sdd-only \
                 --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
                 --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
             else
@@ -346,22 +365,22 @@ jobs:
               project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
               needs_human=$(jq -r '.effective.needs_human // "needs-human"' /tmp/bootstrap.json)
               needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
-              python3 scripts/onboard/registry.py add \
+              python3 scripts/onboard/registry.py --file "$wt/registry/repos.yaml" add \
                 --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
                 --team "$team" --project "$project" \
                 --needs-human "$needs_human" --needs-local "$needs_local" \
                 --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
                 --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
             fi
-            git add registry/repos.yaml
-            if git diff --cached --quiet; then
+            git -C "$wt" add registry/repos.yaml
+            if git -C "$wt" diff --cached --quiet; then
               # ログは複数行になり得るので 1 行に畳んでから output にする
               echo "note=$(paste -sd '/' /tmp/registry.log | sed 's#/# / #g')" >> "$GITHUB_OUTPUT"
               break
             fi
-            git commit -q -m "chore(registry): add $NAME (onboarded via workflow)"
-            if git push origin "HEAD:$REGISTRY_BRANCH"; then
-              echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+            git -C "$wt" commit -q -m "chore(registry): add $NAME (onboarded via workflow)"
+            if git -C "$wt" push origin "HEAD:$REGISTRY_BRANCH"; then
+              echo "note=エントリを追加してコミット($(git -C "$wt" rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
               break
             fi
             if [ "$attempt" -ge 5 ]; then

@@ -239,11 +239,20 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
         )
     # linear.team は linear-worker の必須設定であり、台帳登録にも使う。空のまま先へ進むと
     # 対象だけ変更して台帳登録で失敗するので、コピー前にここで止める
-    team = (cfg.get("linear") or {}).get("team") if isinstance(cfg, dict) else None
+    linear = (cfg.get("linear") or {}) if isinstance(cfg, dict) else {}
+    team = linear.get("team")
     if not isinstance(team, str) or not team.strip():
         raise RuntimeError(
             f"既存の {CONFIG_DEST} に linear.team が無い(または空)。config を修正してから再実行すること"
         )
+    # ラベル名は linear-worker が実値をそのまま読むため、空・前後空白付きの値は
+    # (台帳や Linear 側だけ正規化しても食い違うので)config 側の修正を求める
+    for key, value in (linear.get("labels") or {}).items():
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise RuntimeError(
+                f"既存の {CONFIG_DEST} の linear.labels.{key} が不正({value!r}: 空、または前後に空白)。"
+                "config を修正してから再実行すること"
+            )
 
 
 def effective_config(target: Path) -> dict:
