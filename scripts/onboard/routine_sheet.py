@@ -82,9 +82,10 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
     step += 1
     out.append(f"{step}. 下の設定シートで Routine を作成し、1 回手動実行してログを確認する(`auto_merge.enabled` は最初は false のまま)")
     step += 1
+    entry_name = a.entry_name or repo_name
     out.append(
         f"{step}. Routine の ID を台帳に記入する: Actions → **Registry Update** を "
-        f"`name={repo_name}` `routine_id=<ID>` `config=true` で実行"
+        f"`name={entry_name}` `routine_id=<ID>` `config=true` で実行"
     )
     out.append("")
 
@@ -120,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--linear-note", default="")
     ap.add_argument("--registry-note", default="")
     ap.add_argument("--sdd-only", action="store_true", help="linear-worker なし(Routine シートを出さない)")
+    ap.add_argument("--entry-name", default="", help="台帳上の実際のエントリ名(省略時はリポジトリ名)")
     a = ap.parse_args(argv)
 
     result = json.loads(Path(a.result).read_text(encoding="utf-8")) if a.result else None

@@ -355,6 +355,7 @@ jobs:
           PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
           LINEAR_NOTE: ${{ steps.linear.outputs.note }}
           REGISTRY_NOTE: ${{ steps.registry.outputs.note }}
+          ENTRY_NAME: ${{ steps.registry.outputs.entry_name }}
         run: |
           extra=()
           if [ "$SDD_ONLY" = "true" ]; then extra+=(--sdd-only); fi
@@ -363,4 +364,4 @@ jobs:
             --cron "$ROUTINE_CRON" --result /tmp/bootstrap.json \
             --pr-url "$PR_URL" --pushed-to "$PUSHED_TO" \
             --linear-note "${LINEAR_NOTE:-スキップ(LINEAR_API_KEY 未設定)}" \
-            --registry-note "$REGISTRY_NOTE" "${extra[@]}" >> "$GITHUB_STEP_SUMMARY"
+            --registry-note "$REGISTRY_NOTE" --entry-name "$ENTRY_NAME" "${extra[@]}" >> "$GITHUB_STEP_SUMMARY"

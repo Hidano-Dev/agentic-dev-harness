@@ -11,6 +11,7 @@ YAML ライブラリに依存せず、台帳の既存書式(コメント付き)�
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -137,14 +138,24 @@ def cmd_check(a: argparse.Namespace) -> int:
     return 0
 
 
+def write_output(key: str, value: str) -> None:
+    """GitHub Actions の step output(GITHUB_OUTPUT があるときだけ)。"""
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a", encoding="utf-8") as f:
+            f.write(f"{key}={value}\n")
+
+
 def cmd_add(a: argparse.Namespace) -> int:
     path = Path(a.file)
     text = path.read_text(encoding="utf-8")
     existing = resolve_existing(text, a.name, a.github)
+    if existing and existing != a.name:
+        print(f"registry: {a.github} は別名 '{existing}' で登録済みのため、そのエントリを対象にする")
+        a.name = existing
+    # 後続(Routine 設定シートの Registry Update 案内)が実際のエントリ名を使えるように出力する
+    write_output("entry_name", a.name)
     if existing:
-        if existing != a.name:
-            print(f"registry: {a.github} は別名 '{existing}' で登録済みのため、そのエントリを対象にする")
-            a.name = existing
         s, e = find_block(text, a.name)
         block = text[s:e]
         # SDD のみ(harness: null)で登録済みのリポジトリに linear-worker を足す再実行なら

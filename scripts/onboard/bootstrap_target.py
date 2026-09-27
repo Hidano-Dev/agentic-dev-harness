@@ -287,6 +287,13 @@ def main(argv: list[str] | None = None) -> int:
         # 書き込み先の事前検査(コピー前に全部見る: 途中で失敗して半端な状態を残さない)
         for rel in (Path("CLAUDE.md"), CONFIG_DEST, SYNC_DEST, TEMPLATE_INIT_SYNC):
             assert_regular_dest(target, rel)
+        # 既に config.json がある(= linear-worker が動き得る)対象を SDD のみとして扱うと、
+        # 台帳(harness: null)と実態が食い違うので拒否する
+        if not a.linear_team.strip() and (target / CONFIG_DEST).exists():
+            raise RuntimeError(
+                f"{CONFIG_DEST} が既に存在するため SDD のみ(linear_team 空欄)としては導入できない。"
+                "linear_team に config の linear.team を指定して再実行すること"
+            )
         result = {"assets_synced": sync_assets(harness, target, sync_agents_md)}
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
         result["claude_md"] = ensure_claude_md(target)
