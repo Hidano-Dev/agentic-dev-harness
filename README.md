@@ -39,7 +39,11 @@ CLAUDE.md               … 本リポジトリ用。取り込み側は自分の 
 
 registry/repos.yaml     … 実行リポジトリの台帳(配布されない)
 templates/consumer/     … 取り込み側リポジトリに置く同期ワークフロー(配布されない)
+scripts/onboard/        … 導入ワークフローが使うスクリプト(配布されない)
 docs/                   … 導入手順・運用メモ(配布されない)
+.github/workflows/
+├─ onboard-repo.yml     … Onboard Repository: 新しいリポジトリへの導入をフォーム入力 1 回で行う
+└─ registry-update.yml  … Registry Update: 台帳の Routine ID / config / status を更新
 ```
 
 ## 配布の仕組み
@@ -69,9 +73,11 @@ dev-orchestrator(確認チャネル)と linear-worker(キュー・ゲート・�
 
 ## 新しいリポジトリでハーネスを動かす
 
-`docs/onboarding.md` を参照(配布物の取り込み → config 作成 → Linear のラベル・プロジェクト →
-Routine 作成 → 台帳登録)。Routine のプロンプトは
-`.claude/skills/linear-worker/templates/routine-prompt.md` の雛形を使う(全リポジトリ同文)。
+本リポジトリの Actions で **Onboard Repository** を実行する(対象リポジトリ・Linear チーム・
+ラベル名・チェックコマンドをフォームで入力)。配布物のコピー・同期ワークフローの配置・
+`CLAUDE.md` の import・`config.json` 生成を PR にし、Linear のラベル作成と台帳登録まで行う。
+残る手作業は PR のマージ、CI / レビューボットの確認、Routine の作成(ジョブサマリの設定シートを
+貼る)、**Registry Update** での Routine ID 記入。詳細と前提の secret は `docs/onboarding.md`。
 
 ## メンテナンス
 
@@ -80,4 +86,5 @@ Routine 作成 → 台帳登録)。Routine のプロンプトは
 - cc-sdd 本体の更新取り込み(`npx cc-sdd@latest` 等)もここで行う
 - 実行リポジトリへの反映は各リポジトリの `Harness Sync`(または `Orchestration Sync`)ワークフローを
   手動実行する。自動追従したい場合はワークフローの `schedule` を有効化する
-- 実行リポジトリを追加・停止したら `registry/repos.yaml` を更新する
+- 実行リポジトリを追加・停止したら `registry/repos.yaml` を更新する(追加は Onboard Repository が、
+  Routine ID・status の変更は Registry Update が行う。手で編集して PR を出してもよい)

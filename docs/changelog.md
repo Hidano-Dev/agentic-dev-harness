@@ -3,6 +3,25 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-09-27 — 導入(オンボーディング)を GitHub Actions 化
+
+配布物の変更はない(本リポジトリ側の運用ツールのみ)。
+
+- `.github/workflows/onboard-repo.yml`(**Onboard Repository**)— フォーム入力 1 回で、対象リポジトリへの
+  配布物コピー・`harness-sync.yml` 配置・`CLAUDE.md` の import 行・`config.json` 生成を PR にし、
+  Linear のチーム / プロジェクト確認とラベル作成(`LINEAR_API_KEY` がある場合)、`registry/repos.yaml` への
+  登録、Routine 設定シートの出力までを行う。`linear_team` 空欄で SDD ワークフローのみの導入
+- `.github/workflows/registry-update.yml`(**Registry Update**)— Routine ID・config・status を台帳へ直接反映
+- `scripts/onboard/` — 上記が使うスクリプト(標準ライブラリのみの Python。ローカルでも実行可)
+- `templates/consumer/harness-sync.yml` — 同期先にシンボリックリンクがあればコピー前に失敗するステップ
+  (リンク先の無関係なファイルを上書きしない)と、同期後に `config.json` の JSON 妥当性・プレースホルダ残り・
+  `CLAUDE.md` の import 行を検査して警告するステップを追加
+- `docs/onboarding.md` — 手順をワークフロー前提に書き換え(手動手順は末尾に残置)
+
+**取り込み側で必要な手動追従**
+
+- 既存の実行リポジトリは `harness-sync.yml` を新版に差し替えると検査ステップが有効になる(任意)
+
 ## 2026-09-25 — Routine プロンプト雛形からプレースホルダを廃止
 
 - `.claude/skills/linear-worker/templates/routine-prompt.md` — `{{GITHUB_REPO}}` / `{{LINEAR_TEAM}}` を

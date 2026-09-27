@@ -1,0 +1,83 @@
+# =============================================================================
+# Registry Update — registry/repos.yaml の既存エントリを更新する
+# -----------------------------------------------------------------------------
+# Onboard Repository の後工程。Routine を作成したらその ID を、導入 PR を
+# マージしたら config を true に、運用状態が変わったら status を、
+# フォーム入力だけで台帳へ反映する(PR を出す手間を省く。台帳は配布物ではない)。
+# =============================================================================
+name: Registry Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: '台帳のエントリ名(repos[].name。通常はリポジトリ名)'
+        required: true
+        type: string
+      routine_id:
+        description: 'Routine の ID(例: trig_xxxxxxxx)。変更しないなら空欄'
+        required: false
+        type: string
+        default: ''
+      config:
+        description: 'harness.config(導入 PR をマージしたら true)'
+        required: false
+        type: choice
+        options: [keep, 'true', pending, 'false']
+        default: keep
+      status:
+        description: '運用状態'
+        required: false
+        type: choice
+        options: [keep, pilot, active, paused]
+        default: keep
+
+# concurrency group は使わない(待機 run が 1 件しか保持されず依頼が失われるため)。
+# 同時更新の競合は下の「reset → 再適用 → push」の再試行で解決する
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash   # -eo pipefail
+    env:
+      NAME: ${{ inputs.name }}
+      ROUTINE_ID: ${{ inputs.routine_id }}
+      CONFIG: ${{ inputs.config }}
+      STATUS: ${{ inputs.status }}
+      # 台帳は常に既定ブランチへ書く(tag / 作業ブランチから dispatch されても変えない)
+      REGISTRY_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Update entry
+        run: |
+          python3 scripts/onboard/registry.py update \
+            --name "$NAME" --routine-id "$ROUTINE_ID" --config "$CONFIG" --status "$STATUS" | tee /tmp/registry.log
+          echo "$(cat /tmp/registry.log)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add registry/repos.yaml
+          git diff --cached --quiet && { echo "変更なし"; exit 0; }
+          git commit -m "chore(registry): update $NAME"
+          # 競合時はリモート最新の上で更新をやり直す
+          attempt=0
+          until git push origin "HEAD:$REGISTRY_BRANCH"; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "::error::push が競合し続けています"; exit 1; fi
+            git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
+            git reset -q --hard "origin/$REGISTRY_BRANCH"
+            python3 scripts/onboard/registry.py update \
+              --name "$NAME" --routine-id "$ROUTINE_ID" --config "$CONFIG" --status "$STATUS"
+            git add registry/repos.yaml
+            git diff --cached --quiet && { echo "リモート側で既に反映済み"; exit 0; }
+            git commit -q -m "chore(registry): update $NAME"
+            sleep $((attempt * 5))
+          done
