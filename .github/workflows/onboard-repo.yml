@@ -86,9 +86,12 @@ env:
   REVIEW_BOT: ${{ inputs.review_bot }}
   SYNC_AGENTS_MD: ${{ inputs.sync_agents_md }}
   DIRECT_PUSH: ${{ inputs.direct_push }}
-  SDD_ONLY: ${{ inputs.linear_team == '' }}
+  # SDD_ONLY は入力を trim したうえで "Check inputs" ステップが GITHUB_ENV に設定する
   ONBOARD_BRANCH: chore/harness-onboarding
   ROUTINE_CRON: '52 * * * *'
+  # 台帳(registry/repos.yaml)は常に本リポジトリの既定ブランチへ書く(tag / 作業ブランチから
+  # dispatch されても台帳の置き場所は変えない)
+  REGISTRY_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
   onboard:
@@ -113,7 +116,17 @@ jobs:
             */*) ;;
             *) echo "::error::target_repo は owner/name 形式で指定してください: '$TARGET_REPO'"; exit 1 ;;
           esac
-          if [ "$SDD_ONLY" = "true" ]; then
+          # 自由入力は前後の空白を落として正規化し、以降のステップは正規化後の値だけを見る
+          trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+          team=$(trim "$LINEAR_TEAM"); project=$(trim "$LINEAR_PROJECT"); needs_local=$(trim "$NEEDS_LOCAL")
+          [ -n "$needs_local" ] || needs_local=needs-local
+          {
+            echo "LINEAR_TEAM=$team"
+            echo "LINEAR_PROJECT=$project"
+            echo "NEEDS_LOCAL=$needs_local"
+            if [ -z "$team" ]; then echo "SDD_ONLY=true"; else echo "SDD_ONLY=false"; fi
+          } >> "$GITHUB_ENV"
+          if [ -z "$team" ]; then
             echo "::notice::linear_team が空欄のため SDD ワークフローのみ導入します(config.json / Linear / Routine は省略)"
           fi
 
@@ -277,7 +290,6 @@ jobs:
           CONFIG_RESULT: ${{ steps.bootstrap.outputs.config }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
           PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
           # config が既定ブランチに存在する状態(直接 push 済み、または導入前から存在)なら true、
           # 導入 PR の中で新規作成した場合はマージ待ちなので pending
@@ -289,8 +301,8 @@ jobs:
           attempt=0
           while :; do
             attempt=$((attempt + 1))
-            git fetch -q origin "$REF_NAME"
-            git reset -q --hard "origin/$REF_NAME"
+            git fetch -q origin "$REGISTRY_BRANCH"
+            git reset -q --hard "origin/$REGISTRY_BRANCH"
             if [ "$SDD_ONLY" = "true" ]; then
               python3 scripts/onboard/registry.py add --sdd-only \
                 --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
@@ -309,7 +321,7 @@ jobs:
               break
             fi
             git commit -q -m "chore(registry): add $NAME (onboarded via workflow)"
-            if git push origin "HEAD:$REF_NAME"; then
+            if git push origin "HEAD:$REGISTRY_BRANCH"; then
               echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
               break
             fi

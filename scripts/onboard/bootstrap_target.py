@@ -46,9 +46,27 @@ CLAUDE_MD_NEW = f"""<!--
 """
 
 
+def find_symlinks(dst: Path) -> list[Path]:
+    """同期先(とその配下)にあるシンボリックリンクを列挙する。"""
+    if dst.is_symlink():
+        return [dst]
+    if dst.is_dir():
+        return [p for p in dst.rglob("*") if p.is_symlink()]
+    return []
+
+
 def copy_path(src: Path, dst: Path) -> None:
+    # 同期先にシンボリックリンクがあると copy2 / copytree はリンク先へ書き込むため、
+    # 対象ルートの外や無関係な追跡ファイルを上書きしかねない。リンクは拒否する
+    links = find_symlinks(dst)
+    if links:
+        shown = ", ".join(str(p.relative_to(dst.parent)) for p in links[:5])
+        raise RuntimeError(
+            f"同期先 {dst.name} にシンボリックリンクがあるため上書きコピーを中止した: {shown}"
+            f"{' …' if len(links) > 5 else ''}。リンクを外してから再実行すること"
+        )
     if src.is_dir():
-        shutil.copytree(src, dst, dirs_exist_ok=True)
+        shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
     else:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -56,6 +74,15 @@ def copy_path(src: Path, dst: Path) -> None:
 
 def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
     paths = ASSET_DIRS + (["AGENTS.md"] if sync_agents_md else [])
+    # 途中で失敗して半端な状態を残さないよう、コピー前に全同期先を検査する
+    for p in paths:
+        links = find_symlinks(target / p)
+        if links:
+            shown = ", ".join(str(x.relative_to(target)) for x in links[:5])
+            raise RuntimeError(
+                f"同期先にシンボリックリンクがあるため中止した: {shown}{' …' if len(links) > 5 else ''}。"
+                "リンクを外してから再実行すること"
+            )
     synced: list[str] = []
     for p in paths:
         src = harness / p
@@ -124,6 +151,13 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
         return "template-init", ("updated" if action == "updated" else "template-init")
     dest = target / SYNC_DEST
     if dest.exists():
+        # 同名の無関係なワークフローを正規の同期経路と誤認しない(上書きもしない)
+        text = dest.read_text(encoding="utf-8")
+        if "agentic-dev-harness" not in text or "SYNC_PATHS:" not in text:
+            raise RuntimeError(
+                f"{SYNC_DEST} が既に存在するが agentic-dev-harness の同期ワークフローではない"
+                "(配布元の参照または SYNC_PATHS が無い)。改名・削除してから再実行すること"
+            )
         if sync_agents_md:
             return "workflow", "existing"
         return "workflow", exclude_agents_md(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS)
@@ -197,10 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     sync_agents_md = str(a.sync_agents_md).lower() == "true"
 
-    result = {
-        "assets_synced": sync_assets(harness, target, sync_agents_md),
-    }
     try:
+        result = {"assets_synced": sync_assets(harness, target, sync_agents_md)}
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
     except RuntimeError as e:
         print(f"::error::{e}", file=sys.stderr)

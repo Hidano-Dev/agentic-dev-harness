@@ -50,9 +50,12 @@ jobs:
       ROUTINE_ID: ${{ inputs.routine_id }}
       CONFIG: ${{ inputs.config }}
       STATUS: ${{ inputs.status }}
-      REF_NAME: ${{ github.ref_name }}
+      # 台帳は常に既定ブランチへ書く(tag / 作業ブランチから dispatch されても変えない)
+      REGISTRY_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Update entry
         run: |
@@ -69,11 +72,11 @@ jobs:
           git commit -m "chore(registry): update $NAME"
           # 直列化済みだが、念のため競合時はリモート最新の上で更新をやり直す
           attempt=0
-          until git push origin "HEAD:$REF_NAME"; do
+          until git push origin "HEAD:$REGISTRY_BRANCH"; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge 5 ]; then echo "::error::push が競合し続けています"; exit 1; fi
-            git fetch -q origin "$REF_NAME"
-            git reset -q --hard "origin/$REF_NAME"
+            git fetch -q origin "$REGISTRY_BRANCH"
+            git reset -q --hard "origin/$REGISTRY_BRANCH"
             python3 scripts/onboard/registry.py update \
               --name "$NAME" --routine-id "$ROUTINE_ID" --config "$CONFIG" --status "$STATUS"
             git add registry/repos.yaml
