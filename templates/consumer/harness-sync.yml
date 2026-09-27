@@ -42,17 +42,21 @@ jobs:
 
       # 同期先(とその配下)にシンボリックリンクがあると cp -rf はリンク先へ書き込み、後続の
       # git add -A / push が無関係なファイルの変更を既定ブランチへ直接反映してしまう。
-      # コピー前に検査し、リンクがあれば何もコピーせずに失敗する
-      - name: Refuse symlinks under sync targets
+      # 同期先が submodule(gitlink, mode 160000)だと、書き込んでも superproject の git add に
+      # 乗らず、更新されないまま正常終了に見える。どちらもコピー前に検査して失敗させる
+      - name: Refuse symlinks and submodules under sync targets
         run: |
-          links=""
+          bad=""
           for p in $SYNC_PATHS; do
-            [ -e "$p" ] || [ -L "$p" ] || continue
-            found=$(find "$p" -type l -print)
-            [ -n "$found" ] && links="$links$found"$'\n'
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              found=$(find "$p" -type l -print)
+              if [ -n "$found" ]; then bad="$bad$found"$'\n'; fi
+            fi
           done
-          if [ -n "$links" ]; then
-            echo "::error::同期先にシンボリックリンクがあるため同期を中止しました(リンクを外してから再実行してください): $(echo "$links" | tr '\n' ' ')"
+          gitlinks=$(git ls-files --stage -- $SYNC_PATHS | awk '$1 == "160000" { print $4 " (submodule)" }')
+          if [ -n "$gitlinks" ]; then bad="$bad$gitlinks"$'\n'; fi
+          if [ -n "$bad" ]; then
+            echo "::error::同期先にシンボリックリンクまたは submodule があるため同期を中止しました(通常のファイル・ディレクトリにしてから再実行してください): $(echo "$bad" | tr '\n' ' ')"
             exit 1
           fi
 
