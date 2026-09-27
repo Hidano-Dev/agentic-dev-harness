@@ -161,20 +161,6 @@ jobs:
           REPO: ${{ steps.target.outputs.repo }}
         run: python3 scripts/onboard/registry.py check --name "$NAME" --github "$REPO"
 
-      - name: Linear — verify team/project and ensure labels
-        id: linear
-        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''
-        run: |
-          python3 scripts/onboard/linear_setup.py \
-            --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
-            --needs-human needs-human --needs-local "$NEEDS_LOCAL" | tee /tmp/linear.log
-          echo "note=$(paste -sd '/' /tmp/linear.log | sed 's#/# / #g')" >> "$GITHUB_OUTPUT"
-
-      - name: Linear — skipped
-        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY == ''
-        run: |
-          echo "::notice::secret LINEAR_API_KEY が無いため Linear の存在確認・ラベル作成をスキップしました(手動で needs-human / $NEEDS_LOCAL ラベルを作成してください)"
-
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
@@ -202,6 +188,31 @@ jobs:
           echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
           echo "config=$(jq -r .config /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
 
+      # Linear の準備は bootstrap の後で行い、フォーム入力ではなく config.json の実値
+      # (既存 config があればその team / project / ラベル名)に対して検証・ラベル作成する。
+      # 実値が誤っていればここで失敗し、対象リポジトリへの push / PR には進まない
+      - name: Linear — verify team/project and ensure labels
+        id: linear
+        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''
+        run: |
+          team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
+          project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
+          needs_human=$(jq -r '.effective.needs_human // "needs-human"' /tmp/bootstrap.json)
+          needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
+          if [ -z "$team" ]; then
+            echo "::error::config.json から linear.team を取得できませんでした"; exit 1
+          fi
+          python3 scripts/onboard/linear_setup.py \
+            --team "$team" --project "$project" \
+            --needs-human "$needs_human" --needs-local "$needs_local" | tee /tmp/linear.log
+          echo "note=$(paste -sd '/' /tmp/linear.log | sed 's#/# / #g')" >> "$GITHUB_OUTPUT"
+
+      - name: Linear — skipped
+        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY == ''
+        run: |
+          needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
+          echo "::notice::secret LINEAR_API_KEY が無いため Linear の存在確認・ラベル作成をスキップしました(手動で needs-human / $needs_local ラベルを作成してください)"
+
       - name: Commit and open PR (or push) in target
         id: publish
         working-directory: target
@@ -215,6 +226,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 対象側の .gitignore が配布物や config を除外していると、書いたのにコミットされず
+          # 「導入済み」に見えてしまう。必須パスが ignore されていたら失敗させる
+          ignored=$(jq -r '.assets_synced[]' /tmp/bootstrap.json | while read -r p; do
+              git check-ignore -q "$p" && echo "$p"; done; true)
+          if [ "$(jq -r .config /tmp/bootstrap.json)" = "created" ] && git check-ignore -q .kiro/orchestration/config.json; then
+            ignored="$ignored .kiro/orchestration/config.json"
+          fi
+          if [ -n "$(echo "$ignored" | tr -d '[:space:]')" ]; then
+            echo "::error::対象リポジトリの .gitignore が必須パスを除外しています: $(echo "$ignored" | tr '\n' ' ')— 除外を外してから再実行してください"
+            exit 1
+          fi
           git add -A
           if git diff --cached --quiet; then
             echo "変更なし(導入済み)"
@@ -331,7 +353,8 @@ jobs:
             fi
             git add registry/repos.yaml
             if git diff --cached --quiet; then
-              echo "note=$(cat /tmp/registry.log)" >> "$GITHUB_OUTPUT"
+              # ログは複数行になり得るので 1 行に畳んでから output にする
+              echo "note=$(paste -sd '/' /tmp/registry.log | sed 's#/# / #g')" >> "$GITHUB_OUTPUT"
               break
             fi
             git commit -q -m "chore(registry): add $NAME (onboarded via workflow)"
