@@ -316,10 +316,16 @@ jobs:
                 --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
                 --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
             else
+              # 台帳にはフォーム入力ではなく config.json の実値(新規生成なら入力と同じ、
+              # 既存 config ならその値)を載せる
+              team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
+              project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
+              needs_human=$(jq -r '.effective.needs_human // "needs-human"' /tmp/bootstrap.json)
+              needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
               python3 scripts/onboard/registry.py add \
                 --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
-                --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
-                --needs-human needs-human --needs-local "$NEEDS_LOCAL" \
+                --team "$team" --project "$project" \
+                --needs-human "$needs_human" --needs-local "$needs_local" \
                 --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
                 --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
             fi

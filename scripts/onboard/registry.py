@@ -100,41 +100,51 @@ def entry_github(text: str, name: str) -> str | None:
     return m.group("github") if m else None
 
 
-def name_conflict(text: str, name: str, github: str) -> str | None:
-    """同名エントリが別の owner/name を指していれば、その github を返す(無ければ None)。"""
-    if not any(m.group("name") == name for m in ENTRY_RE.finditer(text)):
-        return None
-    existing = entry_github(text, name)
-    return existing if existing != github else None
+def entry_exists(text: str, name: str) -> bool:
+    return any(m.group("name") == name for m in ENTRY_RE.finditer(text))
+
+
+def name_for_github(text: str, github: str) -> str | None:
+    """github(owner/name)が一致する既存エントリの name を返す(別名で登録済みの検出)。"""
+    for m in ENTRY_RE.finditer(text):
+        if entry_github(text, m.group("name")) == github:
+            return m.group("name")
+    return None
+
+
+def resolve_existing(text: str, name: str, github: str) -> str | None:
+    """このリポジトリを表す既存エントリの name を返す。同名で別リポジトリなら SystemExit。
+
+    優先順: github が一致するエントリ(名前が違っていてもそれ) → 同名エントリ(github も一致するもの)。
+    同名エントリが別の github を指していれば衝突として失敗する。
+    """
+    by_github = name_for_github(text, github)
+    if by_github:
+        return by_github
+    if entry_exists(text, name):
+        raise SystemExit(
+            f"::error::台帳のエントリ名 '{name}' は既に {entry_github(text, name)} が使っている(今回: {github})。"
+            "owner が異なる同名リポジトリは、先に台帳側のエントリ名を変える(または対象を改名する)こと"
+        )
+    return None
 
 
 def cmd_check(a: argparse.Namespace) -> int:
     """対象を変更する前に呼ぶ: 同名で別リポジトリのエントリがあれば失敗する。"""
     text = Path(a.file).read_text(encoding="utf-8")
-    other = name_conflict(text, a.name, a.github)
-    if other:
-        print(
-            f"::error::台帳のエントリ名 '{a.name}' は既に {other} が使っている。"
-            "owner が異なる同名リポジトリは、先に台帳側のエントリ名を変える(または対象を改名する)こと",
-            file=sys.stderr,
-        )
-        return 1
-    print(f"registry: '{a.name}' は {'登録済み(' + a.github + ')' if entry_exists(text, a.name) else '未登録'}")
+    existing = resolve_existing(text, a.name, a.github)
+    print(f"registry: {a.github} は " + (f"'{existing}' として登録済み" if existing else "未登録"))
     return 0
-
-
-def entry_exists(text: str, name: str) -> bool:
-    return any(m.group("name") == name for m in ENTRY_RE.finditer(text))
 
 
 def cmd_add(a: argparse.Namespace) -> int:
     path = Path(a.file)
     text = path.read_text(encoding="utf-8")
-    other = name_conflict(text, a.name, a.github)
-    if other:
-        print(f"::error::台帳のエントリ名 '{a.name}' は既に {other} が使っている(今回: {a.github})", file=sys.stderr)
-        return 1
-    if entry_exists(text, a.name):
+    existing = resolve_existing(text, a.name, a.github)
+    if existing:
+        if existing != a.name:
+            print(f"registry: {a.github} は別名 '{existing}' で登録済みのため、そのエントリを対象にする")
+            a.name = existing
         s, e = find_block(text, a.name)
         block = text[s:e]
         # SDD のみ(harness: null)で登録済みのリポジトリに linear-worker を足す再実行なら
@@ -170,6 +180,9 @@ def cmd_update(a: argparse.Namespace) -> int:
     block = text[s:e]
     changed = []
     if a.routine_id:
+        # 自由入力なので、YAML の plain scalar として安全な文字だけを許す(例: trig_015wYjcF8kMmMqE9NqDLJWkj)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", a.routine_id):
+            raise SystemExit(f"::error::routine_id の形式が不正: {a.routine_id!r}(英数字・_・- のみ)")
         block = replace_in_block(block, r"id", a.routine_id, "routine.id")
         # 「Routine 作成後に記入」の案内コメントは役目を終えるので落とす
         block = re.sub(r"^(\s+id: \S+)\s+# Routine 作成後に.*$", r"\1", block, flags=re.M)

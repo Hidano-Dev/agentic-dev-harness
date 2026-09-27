@@ -136,17 +136,21 @@ def is_template_init_sync(path: Path) -> bool:
     return True
 
 
-def exclude_agents_md(workflow: Path, full_line: str, no_agents_line: str) -> str:
-    """既存の同期ワークフローから AGENTS.md を外す。戻り値: updated / existing。"""
+def set_agents_md_sync(workflow: Path, full_line: str, no_agents_line: str, want_agents_md: bool) -> str:
+    """既存の同期ワークフローの AGENTS.md 同期を入力どおりに揃える。戻り値: updated / existing。
+
+    false なら AGENTS.md を同期対象から外し、true なら(過去に外していても)戻す。
+    """
     text = workflow.read_text(encoding="utf-8")
-    if full_line in text:
-        workflow.write_text(text.replace(full_line, no_agents_line), encoding="utf-8", newline="\n")
-        return "updated"
-    if no_agents_line in text:
+    current, wanted = (full_line, no_agents_line) if not want_agents_md else (no_agents_line, full_line)
+    if wanted in text:
         return "existing"
+    if current in text:
+        workflow.write_text(text.replace(current, wanted), encoding="utf-8", newline="\n")
+        return "updated"
     raise RuntimeError(
-        f"{workflow.name} の同期パス指定が想定と異なるため AGENTS.md を除外できない。"
-        f"手動で AGENTS.md を同期対象から外してから再実行すること(期待した行: {full_line!r})"
+        f"{workflow.name} の同期パス指定が想定と異なるため AGENTS.md の同期設定を変更できない。"
+        f"手動で揃えてから再実行すること(期待した行: {full_line!r} または {no_agents_line!r})"
     )
 
 
@@ -157,14 +161,14 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
     操作は written(新規配置) / updated(既存の同期ワークフローから AGENTS.md を除外) /
     existing(既存を維持) / template-init(生成先の orchestration-sync.yml をそのまま使用)。
     """
-    # 既存の同期ワークフローが AGENTS.md を同期し続けると、今回維持した独自 AGENTS.md が
-    # 次回の同期で上書きされるので、sync_agents_md=false なら同期対象からも除外する。
-    # 除外できない(行が想定と異なる)場合は成功扱いにせず失敗させ、手動修正を求める
+    # 既存の同期ワークフローの AGENTS.md 同期は入力(sync_agents_md)に揃える:
+    # false なら除外(維持した独自 AGENTS.md が次回の同期で上書きされないように)、
+    # true なら過去に除外していても戻す。揃えられない(行が想定と異なる)場合は失敗させる
     if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
-        if sync_agents_md:
-            return "template-init", "template-init"
         assert_regular_dest(target, TEMPLATE_INIT_SYNC)
-        action = exclude_agents_md(target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS)
+        action = set_agents_md_sync(
+            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, sync_agents_md
+        )
         return "template-init", ("updated" if action == "updated" else "template-init")
     assert_regular_dest(target, SYNC_DEST)
     dest = target / SYNC_DEST
@@ -178,9 +182,7 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
                 f"(配布元の参照が無い、または SYNC_PATHS が {SYNC_PATHS_FULL!r} / {SYNC_PATHS_NO_AGENTS!r} の"
                 "いずれでもない)。templates/consumer/harness-sync.yml で置き換えてから再実行すること"
             )
-        if sync_agents_md:
-            return "workflow", "existing"
-        return "workflow", exclude_agents_md(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS)
+        return "workflow", set_agents_md_sync(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, sync_agents_md)
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
     if not sync_agents_md:
         if SYNC_PATHS_FULL not in text:
@@ -205,12 +207,40 @@ def ensure_claude_md(target: Path) -> str:
     return "appended"
 
 
+def effective_config(target: Path) -> dict:
+    """config.json の実値のうち台帳に載せる項目(team / project / labels)を返す。"""
+    cfg = json.loads((target / CONFIG_DEST).read_text(encoding="utf-8"))
+    linear = cfg.get("linear", {})
+    labels = linear.get("labels", {})
+    return {
+        "team": linear.get("team"),
+        "project": linear.get("project"),
+        "needs_human": labels.get("needs_human", "needs-human"),
+        "needs_local": labels.get("needs_local", "needs-local"),
+    }
+
+
 def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
     if not a.linear_team.strip():
         return "skipped"  # SDD ワークフローのみ(linear-worker なし)
     assert_regular_dest(target, CONFIG_DEST)
     dest = target / CONFIG_DEST
     if dest.exists():
+        # 既存 config は変更しない。台帳にはフォーム入力ではなく既存 config の実値を載せるので、
+        # 食い違いは警告して知らせる(直したければ config を編集して再実行)
+        eff = effective_config(target)
+        wanted = {
+            "team": a.linear_team.strip(),
+            "project": a.linear_project.strip() or None,
+            "needs_local": a.needs_local.strip() or "needs-local",
+        }
+        diffs = [f"{k}: config={eff.get(k)!r} / 入力={v!r}" for k, v in wanted.items() if eff.get(k) != v]
+        if diffs:
+            print(
+                "::warning::既存の config.json とフォーム入力が一致しません(config を優先し、台帳にも config の値を"
+                "登録します): " + "; ".join(diffs),
+                file=sys.stderr,
+            )
         return "exists"
     template = json.loads((harness / TEMPLATE_REL).read_text(encoding="utf-8"))
     cfg = render(
@@ -261,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
         result["claude_md"] = ensure_claude_md(target)
         result["config"] = write_config(harness, target, a)
+        # 台帳に載せる実値(新規生成でも既存でも config.json から読む)
+        result["effective"] = effective_config(target) if result["config"] in ("created", "exists") else None
     except RuntimeError as e:
         print(f"::error::{e}", file=sys.stderr)
         return 1
