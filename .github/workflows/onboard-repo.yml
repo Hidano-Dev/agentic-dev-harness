@@ -128,9 +128,12 @@ jobs:
           json=$(gh repo view "$TARGET_REPO" --json nameWithOwner,defaultBranchRef,isTemplate) || {
             echo "::error::'$TARGET_REPO' を参照できません(存在しないか、PAT に権限がありません)"; exit 1; }
           repo=$(jq -r .nameWithOwner <<<"$json")
-          branch=$(jq -r .defaultBranchRef.name <<<"$json")
+          branch=$(jq -r '.defaultBranchRef.name // empty' <<<"$json")
           if [ "$(jq -r .isTemplate <<<"$json")" = "true" ]; then
             echo "::error::'$repo' はテンプレートリポジトリです。生成先のリポジトリを指定してください"; exit 1
+          fi
+          if [ -z "$branch" ]; then
+            echo "::error::'$repo' にはコミットがありません(既定ブランチ未作成)。README 等で初期コミットを作ってから再実行してください"; exit 1
           fi
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "name=${repo##*/}" >> "$GITHUB_OUTPUT"
@@ -211,7 +214,8 @@ jobs:
           fi
 
           # 導入 PR が開いたままなら二重に作らない(ブランチ接頭辞で判定)
-          existing=$(gh pr list -R "$REPO" --state open --json url,headRefName \
+          # gh pr list の既定は先頭 30 件なので、open PR が多いリポジトリでも取りこぼさないよう上限を広げる
+          existing=$(gh pr list -R "$REPO" --state open --limit 1000 --json url,headRefName \
             | jq -r --arg p "$ONBOARD_BRANCH" '[.[] | select(.headRefName | startswith($p)) | .url] | first // empty')
           if [ -n "$existing" ]; then
             echo "::error::導入 PR が既に開いています: $existing — 先にマージまたはクローズしてください"

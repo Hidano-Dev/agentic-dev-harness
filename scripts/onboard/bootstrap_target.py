@@ -67,6 +67,32 @@ def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
     return synced
 
 
+def is_template_init_sync(path: Path) -> bool:
+    """unity-sdd-template 生成先の同期ワークフローか(同名の無関係なファイルを誤認しない)。
+
+    生成先の orchestration-sync.yml は配布元として agentic-dev-harness を参照し、
+    配布物を固定ループでコピーする。どちらも無ければ別物とみなし、harness-sync.yml を置く。
+    """
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if "agentic-dev-harness" not in text:
+        print(
+            f"::warning::{path.name} は agentic-dev-harness を参照していないため生成先の同期ワークフローとは"
+            "みなさず、harness-sync.yml を配置します",
+            file=sys.stderr,
+        )
+        return False
+    if TEMPLATE_INIT_LOOP_FULL not in text and TEMPLATE_INIT_LOOP_NO_AGENTS not in text:
+        print(
+            f"::warning::{path.name} に想定の同期ループが無いため生成先の同期ワークフローとはみなさず、"
+            "harness-sync.yml を配置します",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def exclude_agents_md(workflow: Path, full_line: str, no_agents_line: str) -> str:
     """既存の同期ワークフローから AGENTS.md を外す。戻り値: updated / existing。"""
     text = workflow.read_text(encoding="utf-8")
@@ -91,7 +117,7 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
     # 既存の同期ワークフローが AGENTS.md を同期し続けると、今回維持した独自 AGENTS.md が
     # 次回の同期で上書きされるので、sync_agents_md=false なら同期対象からも除外する。
     # 除外できない(行が想定と異なる)場合は成功扱いにせず失敗させ、手動修正を求める
-    if (target / TEMPLATE_INIT_SYNC).exists():
+    if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
         if sync_agents_md:
             return "template-init", "template-init"
         action = exclude_agents_md(target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS)
