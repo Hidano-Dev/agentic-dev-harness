@@ -249,13 +249,14 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
 def effective_config(target: Path) -> dict:
     """config.json の実値のうち台帳に載せる項目(team / project / labels)を返す。"""
     cfg = json.loads((target / CONFIG_DEST).read_text(encoding="utf-8"))
-    linear = cfg.get("linear", {})
-    labels = linear.get("labels", {})
+    linear = cfg.get("linear") or {}
+    labels = linear.get("labels") or {}
+    # ラベル名が欠落・空なら SKILL.md の既定値に正規化する(空名を台帳や Linear に流さない)
     return {
         "team": linear.get("team"),
-        "project": linear.get("project"),
-        "needs_human": labels.get("needs_human", "needs-human"),
-        "needs_local": labels.get("needs_local", "needs-local"),
+        "project": linear.get("project") or None,
+        "needs_human": (labels.get("needs_human") or "").strip() or "needs-human",
+        "needs_local": (labels.get("needs_local") or "").strip() or "needs-local",
     }
 
 

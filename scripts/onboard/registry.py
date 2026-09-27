@@ -31,11 +31,14 @@ def yaml_str(s: str) -> str:
 def yaml_name(s: str) -> str:
     """リポジトリ名など識別子向け: 文字列として曖昧でなければ plain、そうでなければ引用する。
 
-    `null` / `true` / `1e3` / `0x1f` のような名前は GitHub では有効だが YAML では別の型に
-    読まれるため引用する。
+    `null` / `true` / `1e3` / `0x1f` / `2026-09-27` のような名前は GitHub では有効だが
+    YAML では別の型(null・真偽値・数値・日付)に読まれるため引用する。
     """
-    if re.fullmatch(r"[A-Za-z0-9._/-]+", s) and s.lower() not in YAML_RESERVED and not re.fullmatch(
-        r"[-+]?(\d[\d_]*\.?\d*(e[-+]?\d+)?|\.\d+|0x[0-9a-f]+|0o?[0-7]+|\.inf|\.nan)", s, re.I
+    if (
+        re.fullmatch(r"[A-Za-z0-9._/-]+", s)
+        and s.lower() not in YAML_RESERVED
+        and not re.fullmatch(r"[-+]?(\d[\d_]*\.?\d*(e[-+]?\d+)?|\.\d+|0x[0-9a-f]+|0o?[0-7]+|\.inf|\.nan)", s, re.I)
+        and not re.match(r"\d{4}-\d{1,2}-\d{1,2}", s)  # timestamp(YYYY-MM-DD で始まるもの)
     ):
         return s
     return yaml_str(s)
@@ -208,7 +211,8 @@ def cmd_update(a: argparse.Namespace) -> int:
         # 自由入力なので、YAML の plain scalar として安全な文字だけを許す(例: trig_015wYjcF8kMmMqE9NqDLJWkj)
         if not re.fullmatch(r"[A-Za-z0-9_-]+", a.routine_id):
             raise SystemExit(f"::error::routine_id の形式が不正: {a.routine_id!r}(英数字・_・- のみ)")
-        block = replace_in_block(block, r"id", a.routine_id, "routine.id")
+        # 常に文字列として書く(`null` / `true` / 数字だけの値が別の型に読まれないように)
+        block = replace_in_block(block, r"id", yaml_str(a.routine_id), "routine.id")
         # 「Routine 作成後に記入」の案内コメントは役目を終えるので落とす
         block = re.sub(r"^(\s+id: \S+)\s+# Routine 作成後に.*$", r"\1", block, flags=re.M)
         changed.append(f"routine.id={a.routine_id}")

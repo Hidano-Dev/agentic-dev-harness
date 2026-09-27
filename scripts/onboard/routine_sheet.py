@@ -40,7 +40,7 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
         out.append(f"- 配布物の同期: {', '.join(result.get('assets_synced', [])) or '(なし)'}")
         sync_msg = {
             "written": "`.github/workflows/harness-sync.yml` を配置",
-            "updated": "既存の同期ワークフロー(`harness-sync.yml` / `orchestration-sync.yml`)の同期対象から AGENTS.md を除外",
+            "updated": "既存の同期ワークフロー(`harness-sync.yml` / `orchestration-sync.yml`)の AGENTS.md 同期設定を入力どおりに更新",
             "existing": "既存の `harness-sync.yml` を維持",
             "template-init": "unity-sdd-template 生成先(`orchestration-sync.yml` 既存)のため配置せず",
         }

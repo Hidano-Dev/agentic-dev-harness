@@ -32,11 +32,8 @@ on:
         options: [keep, pilot, active, paused]
         default: keep
 
-# Onboard Repository と同じ group で台帳更新を直列化する
-concurrency:
-  group: harness-registry
-  cancel-in-progress: false
-
+# concurrency group は使わない(待機 run が 1 件しか保持されず依頼が失われるため)。
+# 同時更新の競合は下の「reset → 再適用 → push」の再試行で解決する
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -70,7 +67,7 @@ jobs:
           git add registry/repos.yaml
           git diff --cached --quiet && { echo "変更なし"; exit 0; }
           git commit -m "chore(registry): update $NAME"
-          # 直列化済みだが、念のため競合時はリモート最新の上で更新をやり直す
+          # 競合時はリモート最新の上で更新をやり直す
           attempt=0
           until git push origin "HEAD:$REGISTRY_BRANCH"; do
             attempt=$((attempt + 1))

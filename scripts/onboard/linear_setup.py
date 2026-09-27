@@ -100,12 +100,15 @@ def ensure_label(team_id: str, name: str, description: str, color: str) -> str:
         team = node.get("team")
         if team is None or team["id"] == team_id:
             return "exists"
-    gql(
+    payload = gql(
         "mutation($input: IssueLabelCreateInput!) {"
         "  issueLabelCreate(input: $input) { success issueLabel { id name } }"
         "}",
         {"input": {"name": name, "teamId": team_id, "description": description, "color": color}},
-    )
+    )["issueLabelCreate"]
+    # トップレベルの GraphQL error なしで success=false が返る(権限・入力検証で拒否)場合がある
+    if not payload.get("success") or not (payload.get("issueLabel") or {}).get("id"):
+        raise LinearError(f"ラベル '{name}' の作成が成功しなかった: {json.dumps(payload, ensure_ascii=False)}")
     return "created"
 
 
