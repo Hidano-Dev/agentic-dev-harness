@@ -9,7 +9,8 @@ Onboard Repository ワークフローが、対象リポジトリを `target/` �
      独自ファイルとみなし触らない(配布版にはマーカーが入っている)
 2. 同期ワークフロー(templates/consumer/harness-sync.yml)を配置
    - 既に harness-sync.yml / orchestration-sync.yml(unity-sdd-template 生成先)が
-     あれば置かない
+     あれば置かない。ただしマーカー判定を持たない旧版で、対象が独自 AGENTS.md を
+     維持している場合は、同期対象から AGENTS.md を外す(次回の同期で上書きされないように)
 3. ルート CLAUDE.md に `@.claude/rules/sdd-workflow.md` を保証
 4. `.kiro/orchestration/config.json` を生成(既にあれば触らない。`--linear-team` が
    空なら SDD ワークフローのみの導入とみなし作らない)。`linear.project` はリポジトリ名
@@ -161,32 +162,46 @@ def is_template_init_sync(path: Path) -> bool:
     return True
 
 
-def warn_if_legacy_agents_md_sync(workflow: Path, full_line: str) -> None:
-    """AGENTS.md をマーカー判定なしで上書きする旧版の同期ワークフローなら警告する。
+def protect_custom_agents_md(workflow: Path, full_line: str, no_agents_line: str, agents_md_kept: bool) -> str:
+    """マーカー判定を持たない旧版の同期ワークフローで、独自 AGENTS.md が上書きされないようにする。
 
     旧版は SYNC_PATHS(またはループ)に AGENTS.md を含み、マーカーの文字列を持たない。
-    独自の AGENTS.md を持つリポジトリで旧版が動くと上書きされるので差し替えを促す
-    (ワークフロー本体はユーザーの編集があり得るため、ここでは書き換えない)。
+    対象が独自 AGENTS.md(マーカー無し)を維持している場合、旧版のまま次回の同期が走ると
+    無条件の cp で上書きされるので、同期対象から AGENTS.md を外して守る。
+    ワークフロー本体はユーザーの編集があり得るため、この 1 行以外は書き換えない。
+    戻り値: updated(外した) / existing(変更なし)。
     """
     text = workflow.read_text(encoding="utf-8")
-    if full_line in text and AGENTS_MD_MARKER not in text:
+    if AGENTS_MD_MARKER in text or full_line not in text:
+        return "existing"  # 新版、または既に AGENTS.md を外してある
+    if not agents_md_kept:
+        # 配布版(マーカー付き)を使っている対象なら旧版でも同じ内容を上書きするだけで害はない。
+        # 将来マーカーを消して独自化したときに守られないので差し替えは勧めておく
         print(
             f"::warning::{workflow.name} は AGENTS.md をマーカー判定なしで上書きする旧版です。"
-            "独自の AGENTS.md を保護するには templates/consumer/harness-sync.yml の新版に差し替えてください",
+            "AGENTS.md を独自化する予定があるなら templates/consumer/harness-sync.yml の新版に差し替えてください",
             file=sys.stderr,
         )
+        return "existing"
+    workflow.write_text(text.replace(full_line, no_agents_line), encoding="utf-8", newline="\n")
+    print(
+        f"::notice::{workflow.name} は旧版のため、独自の AGENTS.md を守るよう同期対象から AGENTS.md を外した"
+        "(新版に差し替えればマーカー判定で自動的に守られる)",
+        file=sys.stderr,
+    )
+    return "updated"
 
 
-def place_sync_workflow(harness: Path, target: Path) -> tuple[str, str]:
+def place_sync_workflow(harness: Path, target: Path, agents_md_kept: bool) -> tuple[str, str]:
     """戻り値: (sync 方式, 今回の操作)。
 
     方式は registry の sync フィールドに対応(workflow / template-init)。
-    操作は written(新規配置) / existing(既存を維持) /
-    template-init(生成先の orchestration-sync.yml をそのまま使用)。
+    操作は written(新規配置) / existing(既存を維持) / updated(旧版の同期対象から
+    AGENTS.md を外した) / template-init(生成先の orchestration-sync.yml をそのまま使用)。
     """
     assert_regular_dest(target, SYNC_DEST)
     dest = target / SYNC_DEST
-    has_harness_sync = False
+    harness_sync_action = None
     if dest.exists():
         # 同名の無関係なワークフロー・古い不完全なワークフローを正規の同期経路と誤認しない
         # (上書きもしない)。配布元の参照と、既知の SYNC_PATHS 指定のどちらかを必須にする
@@ -197,13 +212,17 @@ def place_sync_workflow(harness: Path, target: Path) -> tuple[str, str]:
                 f"(配布元の参照が無い、または SYNC_PATHS が {SYNC_PATHS_FULL!r} / {SYNC_PATHS_NO_AGENTS!r} の"
                 "いずれでもない)。templates/consumer/harness-sync.yml で置き換えてから再実行すること"
             )
-        warn_if_legacy_agents_md_sync(dest, SYNC_PATHS_FULL)
-        has_harness_sync = True
+        harness_sync_action = protect_custom_agents_md(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, agents_md_kept)
     if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
-        warn_if_legacy_agents_md_sync(target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL)
-        return "template-init", "template-init"
-    if has_harness_sync:
-        return "workflow", "existing"
+        # 生成先の同期ワークフロー。harness-sync.yml と共存している場合は両方を守る(上で処理済み)
+        assert_regular_dest(target, TEMPLATE_INIT_SYNC)
+        action = protect_custom_agents_md(
+            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, agents_md_kept
+        )
+        updated = action == "updated" or harness_sync_action == "updated"
+        return "template-init", ("updated" if updated else "template-init")
+    if harness_sync_action is not None:
+        return "workflow", harness_sync_action
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8", newline="\n")
@@ -346,7 +365,9 @@ def main(argv: list[str] | None = None) -> int:
         check_existing_config_identity(target, a.repo, a.default_branch)
         result: dict = {}
         result["assets_synced"], result["agents_md"] = sync_assets(harness, target)
-        result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target)
+        result["sync_mode"], result["sync_workflow"] = place_sync_workflow(
+            harness, target, agents_md_kept=result["agents_md"] == "kept"
+        )
         result["claude_md"] = ensure_claude_md(target)
         result["config"] = write_config(harness, target, a)
         # 台帳に載せる実値(新規生成でも既存でも config.json から読む)

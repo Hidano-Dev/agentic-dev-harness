@@ -22,7 +22,8 @@
 **取り込み側で必要な手動追従**
 
 - 独自の `AGENTS.md` を持つリポジトリ(unity-renderer)は、`harness-sync.yml` を新版に差し替えれば
-  `SYNC_PATHS` から `AGENTS.md` を外す運用をやめてよい(旧版のままでも除外設定が効くので安全)。
+  `SYNC_PATHS` から `AGENTS.md` を外す運用をやめてよい(旧版のままでも除外設定が効くので安全。
+  旧版で `AGENTS.md` を含めたまま独自化していた場合は、Onboard Repository の再実行が除外へ書き換える)。
   配布版をそのまま使っているリポジトリは、旧版の `harness-sync.yml` を残すと次回の同期で
   マーカー付きの新版 `AGENTS.md` に置き換わる(内容は同じ)
 - unity-sdd-template 生成先の `orchestration-sync.yml` は同じマーカー判定を持たない。独自の
