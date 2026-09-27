@@ -38,9 +38,10 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
     out.append("## 自動で行ったこと\n")
     if result:
         out.append(f"- 配布物の同期: {', '.join(result.get('assets_synced', [])) or '(なし)'}")
+        if result.get("agents_md") == "kept":
+            out.append("- `AGENTS.md`: 対象の独自ファイル(マーカー無し)を維持。同期ワークフローも上書きしない")
         sync_msg = {
             "written": "`.github/workflows/harness-sync.yml` を配置",
-            "updated": "既存の同期ワークフロー(`harness-sync.yml` / `orchestration-sync.yml`)の AGENTS.md 同期設定を入力どおりに更新",
             "existing": "既存の `harness-sync.yml` を維持",
             "template-init": "unity-sdd-template 生成先(`orchestration-sync.yml` 既存)のため配置せず",
         }
@@ -71,12 +72,15 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
         out.append("")
         out.append(
             "SDD ワークフローのみの導入なので Routine は不要。後から linear-worker を動かす場合は "
-            "Onboard Repository を `linear_team` 付きで再実行する(配布物は同期済みなので config と台帳だけ差分になる)。"
+            "Onboard Repository を `sdd_only` を外して再実行する(配布物は同期済みなので config と台帳だけ差分になる)。"
         )
         return "\n".join(out) + "\n"
     step = 1
     if a.pr_url:
-        out.append(f"{step}. 対象リポジトリの PR をレビューしてマージする(`config.json` の値を確認。`checks.fast` が空なら CI 相当のコマンドを入れる)")
+        out.append(
+            f"{step}. 対象リポジトリの PR をレビューしてマージする(`config.json` の値を確認。"
+            "`checks.fast` は空のままでもワーカーが CI 定義等から推定する。固定したいコマンドがあれば入れる)"
+        )
         step += 1
     out.append(f"{step}. GitHub 側: PR で CI が走ることを確認する。外部レビューボット(例: Codex)を使うなら GitHub App をインストールし、PR で動くことを 1 回確認する")
     step += 1

@@ -4,15 +4,20 @@
 # Actions タブから手動実行(workflow_dispatch)。docs/onboarding.md の手順のうち
 # 「ファイルのコピー・項目埋め・台帳登録」に当たる部分を代行する:
 #
-#   1. Linear: チーム / プロジェクトの存在確認、needs-human / needs-local ラベルの作成
-#      (secret LINEAR_API_KEY がある場合のみ。無ければスキップ)
-#   2. 対象リポジトリ: 配布物(.claude .codex .kiro .agents [AGENTS.md])の同期、
+#   1. Linear: チームの存在確認、リポジトリ名と同名のプロジェクトの確認(無ければ作成)、
+#      needs-human / needs-local ラベルの作成(secret LINEAR_API_KEY がある場合のみ。無ければスキップ)
+#   2. 対象リポジトリ: 配布物(.claude .codex .kiro .agents AGENTS.md)の同期、
 #      harness-sync.yml の配置、CLAUDE.md への import 行、.kiro/orchestration/config.json の
 #      生成 → PR を作成(または default branch へ直接 push)
 #   3. 本リポジトリ: registry/repos.yaml にエントリを追加してコミット
 #   4. ジョブサマリに「残りの手作業」と Routine 設定シート(プロンプト本文込み)を出力
 #
-# linear_team を空欄にすると「SDD ワークフローのみ」の導入になる(config.json を作らず、
+# フォームで決めるのはチーム名・外部レビューボット・PR にするか直接 push か、だけ。
+# 残りは規約で決める(Linear プロジェクト = リポジトリ名、ラベル = needs-human / needs-local、
+# checks.fast は空でワーカーが推定、AGENTS.md は対象側にマーカー無しの独自ファイルがあれば触らない)。
+# 変えたい場合は生成後の config.json を編集する。
+#
+# sdd_only を on にすると「SDD ワークフローのみ」の導入になる(config.json を作らず、
 # Linear・Routine 関連はすべて省略。台帳には harness: null で登録)。
 #
 # 必要な secret(本リポジトリの Settings → Secrets and variables → Actions):
@@ -20,7 +25,10 @@
 #                           (Contents: Read/Write, Pull requests: Read/Write,
 #                            Workflows: Read/Write, Metadata: Read)。
 #                           Workflows 権限は .github/workflows/ 配下を push するのに必要
-#   LINEAR_API_KEY        … 任意。Linear の個人 API キー(ラベル作成・存在確認に使う)
+#   LINEAR_API_KEY        … 任意。Linear の個人 API キー(ラベル・プロジェクト作成、存在確認に使う)
+# 任意の variable(同じ画面の Variables タブ):
+#   LINEAR_DEFAULT_TEAM   … linear_team を空欄にしたときに使うチーム名。本リポジトリを clone して
+#                           使う人が自分のチーム名を置く(ワークフロー本文に固定値を書かない)
 #
 # 冪等: 同じリポジトリに再実行しても、既存の config.json / CLAUDE.md の import /
 # 台帳エントリは上書きしない(配布物の同期のみ毎回行う)。
@@ -35,38 +43,23 @@ on:
         required: true
         type: string
       linear_team:
-        description: 'Linear チーム名(config の linear.team)。空欄なら SDD ワークフローのみ導入(linear-worker なし)'
+        description: 'Linear チーム名(config の linear.team)。空欄なら variable LINEAR_DEFAULT_TEAM を使う'
         required: false
         type: string
         default: ''
-      linear_project:
-        description: 'Linear プロジェクト名(絞らないなら空欄)'
+      sdd_only:
+        description: 'SDD ワークフローのみ導入する(linear-worker なし。config.json / Linear / Routine を省略)'
         required: false
-        type: string
-        default: ''
-      needs_local_label:
-        description: '「ローカル環境・実機が必要」ラベル名(例: needs-unity)'
-        required: false
-        type: string
-        default: 'needs-local'
-      checks_fast:
-        description: '一次ゲートのローカルチェック(カンマ区切り。例: pnpm lint, pnpm test)'
-        required: false
-        type: string
-        default: ''
+        type: boolean
+        default: false
       review_bot:
-        description: '外部レビューボット'
+        description: '外部レビューボット(config の review.bot。GitHub 側のレビュー設定は変えない)'
         required: false
         type: choice
         options: [codex, none]
         default: codex
-      sync_agents_md:
-        description: 'AGENTS.md も配布・同期する(対象に独自の AGENTS.md があるなら外す)'
-        required: false
-        type: boolean
-        default: true
       direct_push:
-        description: 'PR を作らずデフォルトブランチへ直接 push する'
+        description: 'この実行の導入コミットを PR にせずデフォルトブランチへ直接 push する(実行ごとの指定。保存されない)'
         required: false
         type: boolean
         default: false
@@ -83,14 +76,12 @@ concurrency:
 
 env:
   TARGET_REPO: ${{ inputs.target_repo }}
-  LINEAR_TEAM: ${{ inputs.linear_team }}
-  LINEAR_PROJECT: ${{ inputs.linear_project }}
-  NEEDS_LOCAL: ${{ inputs.needs_local_label }}
-  CHECKS_FAST: ${{ inputs.checks_fast }}
+  LINEAR_TEAM_INPUT: ${{ inputs.linear_team }}
+  LINEAR_DEFAULT_TEAM: ${{ vars.LINEAR_DEFAULT_TEAM }}
+  SDD_ONLY: ${{ inputs.sdd_only }}
   REVIEW_BOT: ${{ inputs.review_bot }}
-  SYNC_AGENTS_MD: ${{ inputs.sync_agents_md }}
   DIRECT_PUSH: ${{ inputs.direct_push }}
-  # SDD_ONLY は入力を trim したうえで "Check inputs" ステップが GITHUB_ENV に設定する
+  # LINEAR_TEAM(入力 → variable の順で決めた実値)は "Check inputs" ステップが GITHUB_ENV に設定する
   ONBOARD_BRANCH: chore/harness-onboarding
   ROUTINE_CRON: '52 * * * *'
   # 台帳(registry/repos.yaml)は常に本リポジトリの既定ブランチへ書く(tag / 作業ブランチから
@@ -122,17 +113,21 @@ jobs:
           esac
           # 自由入力は前後の空白を落として正規化し、以降のステップは正規化後の値だけを見る
           trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
-          team=$(trim "$LINEAR_TEAM"); project=$(trim "$LINEAR_PROJECT"); needs_local=$(trim "$NEEDS_LOCAL")
-          [ -n "$needs_local" ] || needs_local=needs-local
-          {
-            echo "LINEAR_TEAM=$team"
-            echo "LINEAR_PROJECT=$project"
-            echo "NEEDS_LOCAL=$needs_local"
-            if [ -z "$team" ]; then echo "SDD_ONLY=true"; else echo "SDD_ONLY=false"; fi
-          } >> "$GITHUB_ENV"
-          if [ -z "$team" ]; then
-            echo "::notice::linear_team が空欄のため SDD ワークフローのみ導入します(config.json / Linear / Routine は省略)"
+          team=""
+          if [ "$SDD_ONLY" = "true" ]; then
+            echo "::notice::sdd_only のため SDD ワークフローのみ導入します(config.json / Linear / Routine は省略。linear_team は無視)"
+          else
+            team=$(trim "$LINEAR_TEAM_INPUT")
+            if [ -z "$team" ]; then
+              team=$(trim "$LINEAR_DEFAULT_TEAM")
+              if [ -z "$team" ]; then
+                echo "::error::linear_team が空欄で、variable LINEAR_DEFAULT_TEAM も未設定です。linear_team を入力するか、Settings → Secrets and variables → Actions → Variables に LINEAR_DEFAULT_TEAM を置くか、sdd_only を選んでください"
+                exit 1
+              fi
+              echo "::notice::linear_team が空欄のため variable LINEAR_DEFAULT_TEAM('$team')を使います"
+            fi
           fi
+          echo "LINEAR_TEAM=$team" >> "$GITHUB_ENV"
 
       - name: Checkout harness (this repository)
         uses: actions/checkout@v4
@@ -198,17 +193,16 @@ jobs:
             --harness . --target target \
             --repo "$REPO" \
             --default-branch "$DEFAULT_BRANCH" \
-            --linear-team "$LINEAR_TEAM" --linear-project "$LINEAR_PROJECT" \
-            --needs-local "$NEEDS_LOCAL" --checks-fast "$CHECKS_FAST" \
-            --review-bot "$REVIEW_BOT" --sync-agents-md "$SYNC_AGENTS_MD" \
+            --linear-team "$LINEAR_TEAM" --review-bot "$REVIEW_BOT" \
             --result /tmp/bootstrap.json
           echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
           echo "config=$(jq -r .config /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
 
       # Linear の準備は bootstrap の後で行い、フォーム入力ではなく config.json の実値
-      # (既存 config があればその team / project / ラベル名)に対して検証・ラベル作成する。
+      # (既存 config があればその team / project / ラベル名)に対して検証・作成する。
+      # プロジェクト(新規 config ではリポジトリ名)は無ければ作る。
       # 実値が誤っていればここで失敗し、対象リポジトリへの push / PR には進まない
-      - name: Linear — verify team/project and ensure labels
+      - name: Linear — verify team, ensure project and labels
         id: linear
         if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''
         run: |
@@ -300,9 +294,11 @@ jobs:
             echo "## 内容"
             echo
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
+            if [ "$(jq -r .agents_md /tmp/bootstrap.json)" = "kept" ]; then
+              echo "- \`AGENTS.md\`: 独自ファイル(マーカー無し)のため上書きしていない。同期ワークフローも上書きしない"
+            fi
             case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
               written)       echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
-              updated)       echo "- 既存の同期ワークフローの AGENTS.md 同期設定を入力(sync_agents_md=$SYNC_AGENTS_MD)どおりに更新" ;;
               template-init) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
               *)             echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
             esac
@@ -312,9 +308,9 @@ jobs:
               echo
               echo "## マージ前に確認すること"
               echo
-              echo "- \`config.json\` の値(linear.team / project / labels / checks.fast / review.bot)"
+              echo "- \`config.json\` の値(linear.team / project = リポジトリ名 / labels / review.bot)。変えたい項目はここで編集する"
               echo "- \`auto_merge.enabled\` は false のまま。ゲートの動きを数回確認してから true にする"
-              echo "- \`checks.fast\` が空なら、CI 相当のコマンド(lint / typecheck / test)を入れる"
+              echo "- \`checks.fast\` は空でもワーカーが CI 定義等から推定して実行する。固定したいコマンドがあれば入れる"
             fi
             echo
             echo "導入手順の全体: $DOCS_URL"

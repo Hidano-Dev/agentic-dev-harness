@@ -3,7 +3,9 @@
 
 - チーム名が存在すること(無ければ候補一覧を出して失敗 → config.json に
   誤ったチーム名が入るのを防ぐ)
-- プロジェクト名を指定した場合、そのチームに存在すること
+- プロジェクト(リポジトリ名と同名)がそのチームに存在すること。無ければチームの
+  プロジェクトとして作成する(同名プロジェクトが別チームにだけある場合は、重複を
+  作らず失敗してチーム追加を求める)
 - `needs-human` / needs_local ラベルが(ワークスペース共通またはそのチームに)
   存在すること。無ければチームラベルとして作成する
 
@@ -74,20 +76,33 @@ def find_team(name: str) -> dict:
     raise LinearError(f"チーム名 '{name}' が複数ヒットした({len(nodes)} 件)。名前を一意にすること")
 
 
-def check_project(team_id: str, project: str) -> None:
+def ensure_project(team_id: str, project: str) -> str:
+    """戻り値: 'exists' | 'created'"""
     data = gql(
-        "query($id: String!, $name: String!) {"
-        "  team(id: $id) { projects(filter: { name: { eq: $name } }) { nodes { id name } } }"
+        "query($name: String!) {"
+        "  projects(filter: { name: { eq: $name } }) { nodes { id name teams { nodes { id name } } } }"
         "}",
-        {"id": team_id, "name": project},
+        {"name": project},
     )
-    if not data["team"]["projects"]["nodes"]:
-        avail = gql(
-            "query($id: String!) { team(id: $id) { projects(first: 100) { nodes { name } } } }",
-            {"id": team_id},
-        )["team"]["projects"]["nodes"]
-        names = ", ".join(p["name"] for p in avail) or "(なし)"
-        raise LinearError(f"プロジェクト '{project}' がチームに無い。存在するプロジェクト: {names}")
+    nodes = data["projects"]["nodes"]
+    if any(team_id in {t["id"] for t in n["teams"]["nodes"]} for n in nodes):
+        return "exists"
+    if nodes:
+        # 同名プロジェクトが別チームにだけある。重複名を作ると Issue の紐付け先が曖昧になるので止める
+        others = ", ".join(t["name"] for n in nodes for t in n["teams"]["nodes"]) or "(チームなし)"
+        raise LinearError(
+            f"プロジェクト '{project}' は別チーム({others})に存在する。Linear でそのプロジェクトに"
+            "このチームを追加するか、名前を変えてから再実行すること"
+        )
+    payload = gql(
+        "mutation($input: ProjectCreateInput!) {"
+        "  projectCreate(input: $input) { success project { id name } }"
+        "}",
+        {"input": {"name": project, "teamIds": [team_id]}},
+    )["projectCreate"]
+    if not payload.get("success") or not (payload.get("project") or {}).get("id"):
+        raise LinearError(f"プロジェクト '{project}' の作成が成功しなかった: {json.dumps(payload, ensure_ascii=False)}")
+    return "created"
 
 
 def ensure_label(team_id: str, name: str, description: str, color: str) -> str:
@@ -124,7 +139,7 @@ def write_outputs(outputs: dict[str, str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--team", required=True)
-    ap.add_argument("--project", default="")
+    ap.add_argument("--project", default="", help="リポジトリ名と同名のプロジェクト。無ければ作成する")
     ap.add_argument("--needs-human", default="needs-human")
     ap.add_argument("--needs-local", default="needs-local")
     a = ap.parse_args(argv)
@@ -132,9 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         team = find_team(a.team)
         print(f"チーム: {team['name']} (key {team['key']})")
+        project_state = ""
         if a.project.strip():
-            check_project(team["id"], a.project.strip())
-            print(f"プロジェクト: {a.project.strip()} (存在確認 OK)")
+            project_state = ensure_project(team["id"], a.project.strip())
+            print(f"プロジェクト {a.project.strip()}: {project_state}")
         results = {}
         for kind, label_name in (("needs_human", a.needs_human), ("needs_local", a.needs_local)):
             meta = LABELS[kind]
@@ -147,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(
         {
             "team_key": team["key"],
+            "project": project_state,
             "labels": json.dumps(results, ensure_ascii=False),
         }
     )

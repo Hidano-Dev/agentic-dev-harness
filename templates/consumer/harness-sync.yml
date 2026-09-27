@@ -11,7 +11,9 @@
 #   ファイル(.claude/settings.json、.kiro/specs、.kiro/steering、
 #   .kiro/orchestration/config.json 等)は残る。harness 側で削除された
 #   ファイルは自動では消えないため、必要なら手動で削除する
-# - AGENTS.md にプロジェクト固有の追記がある場合は SYNC_PATHS から外す
+# - AGENTS.md は配布版の先頭にマーカー(AGENTS_MD_MARKER)が入っている。取り込み側の
+#   AGENTS.md にマーカーが無ければ独自ファイルとみなして上書きしない(プロジェクト固有の
+#   追記をしたらマーカー行を消す。SYNC_PATHS を編集する必要はない)
 # - 取り込み元が public リポジトリなのでトークン不要。private にする場合は
 #   checkout 用の PAT を secret に置き、clone URL に埋め込む
 #
@@ -29,8 +31,10 @@ env:
   # 配布元(agentic-dev-harness)
   HARNESS_REPO: Hidano-Dev/agentic-dev-harness
   HARNESS_REF: main
-  # 取り込むパス(空白区切り)。AGENTS.md に独自追記があるリポジトリでは外す
+  # 取り込むパス(空白区切り)
   SYNC_PATHS: ".claude .codex .kiro .agents AGENTS.md"
+  # 配布版 AGENTS.md の先頭にあるマーカー。無い AGENTS.md は独自ファイルとみなし上書きしない
+  AGENTS_MD_MARKER: "managed-by: agentic-dev-harness"
 
 jobs:
   sync:
@@ -64,11 +68,15 @@ jobs:
         run: |
           git clone --depth 1 --branch "$HARNESS_REF" --single-branch "https://github.com/${HARNESS_REPO}.git" /tmp/harness
           for p in $SYNC_PATHS; do
-            if [ -e "/tmp/harness/$p" ]; then
-              cp -rf "/tmp/harness/$p" ./
-            else
+            if [ ! -e "/tmp/harness/$p" ]; then
               echo "::warning::$p は配布元に存在しないためスキップしました"
+              continue
             fi
+            if [ "$p" = "AGENTS.md" ] && [ -f AGENTS.md ] && ! grep -qF "$AGENTS_MD_MARKER" AGENTS.md; then
+              echo "::notice::AGENTS.md にマーカー($AGENTS_MD_MARKER)が無いため独自ファイルとみなし、上書きしません"
+              continue
+            fi
+            cp -rf "/tmp/harness/$p" ./
           done
           rm -rf /tmp/harness
 
