@@ -159,7 +159,11 @@ jobs:
         env:
           NAME: ${{ steps.target.outputs.name }}
           REPO: ${{ steps.target.outputs.repo }}
-        run: python3 scripts/onboard/registry.py check --name "$NAME" --github "$REPO"
+        run: |
+          # 台帳は常に既定ブランチ版を見る(作業ブランチ / tag から dispatch されても古い台帳で判定しない)
+          git fetch -q origin "$REGISTRY_BRANCH"
+          git show "origin/$REGISTRY_BRANCH:registry/repos.yaml" > /tmp/repos-default.yaml
+          python3 scripts/onboard/registry.py --file /tmp/repos-default.yaml check --name "$NAME" --github "$REPO"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -227,14 +231,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # 対象側の .gitignore が配布物や config を除外していると、書いたのにコミットされず
-          # 「導入済み」に見えてしまう。必須パスが ignore されていたら失敗させる
-          ignored=$(jq -r '.assets_synced[]' /tmp/bootstrap.json | while read -r p; do
-              git check-ignore -q "$p" && echo "$p"; done; true)
-          if [ "$(jq -r .config /tmp/bootstrap.json)" = "created" ] && git check-ignore -q .kiro/orchestration/config.json; then
-            ignored="$ignored .kiro/orchestration/config.json"
-          fi
-          if [ -n "$(echo "$ignored" | tr -d '[:space:]')" ]; then
-            echo "::error::対象リポジトリの .gitignore が必須パスを除外しています: $(echo "$ignored" | tr '\n' ' ')— 除外を外してから再実行してください"
+          # 「導入済み」に見えてしまう。git add -A が落とすのは「未追跡かつ ignore 対象」の
+          # ファイルなので、書き込んだパス配下でそれに該当するファイルを個別に列挙して失敗させる
+          mapfile -t roots < <(jq -r '.assets_synced[]' /tmp/bootstrap.json)
+          roots+=(CLAUDE.md .kiro/orchestration/config.json .github/workflows/harness-sync.yml)
+          ignored=$(git ls-files --others --ignored --exclude-standard -- "${roots[@]}" 2>/dev/null || true)
+          if [ -n "$ignored" ]; then
+            echo "::error::対象リポジトリの .gitignore が配布ファイルを除外しています(コミットされません): $(echo "$ignored" | tr '\n' ' ')— 除外を外してから再実行してください"
             exit 1
           fi
           git add -A

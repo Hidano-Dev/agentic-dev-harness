@@ -164,14 +164,9 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
     # 既存の同期ワークフローの AGENTS.md 同期は入力(sync_agents_md)に揃える:
     # false なら除外(維持した独自 AGENTS.md が次回の同期で上書きされないように)、
     # true なら過去に除外していても戻す。揃えられない(行が想定と異なる)場合は失敗させる
-    if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
-        assert_regular_dest(target, TEMPLATE_INIT_SYNC)
-        action = set_agents_md_sync(
-            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, sync_agents_md
-        )
-        return "template-init", ("updated" if action == "updated" else "template-init")
     assert_regular_dest(target, SYNC_DEST)
     dest = target / SYNC_DEST
+    harness_sync_action = None
     if dest.exists():
         # 同名の無関係なワークフロー・古い不完全なワークフローを正規の同期経路と誤認しない
         # (上書きもしない)。配布元の参照と、既知の SYNC_PATHS 指定のどちらかを必須にする
@@ -182,7 +177,18 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
                 f"(配布元の参照が無い、または SYNC_PATHS が {SYNC_PATHS_FULL!r} / {SYNC_PATHS_NO_AGENTS!r} の"
                 "いずれでもない)。templates/consumer/harness-sync.yml で置き換えてから再実行すること"
             )
-        return "workflow", set_agents_md_sync(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, sync_agents_md)
+        harness_sync_action = set_agents_md_sync(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, sync_agents_md)
+    if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
+        # 生成先の同期ワークフロー。harness-sync.yml と共存している場合は両方を入力どおりに揃える
+        # (上で処理済み)ので、どちらか一方だけが AGENTS.md を同期し続けることはない
+        assert_regular_dest(target, TEMPLATE_INIT_SYNC)
+        action = set_agents_md_sync(
+            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, sync_agents_md
+        )
+        updated = action == "updated" or harness_sync_action == "updated"
+        return "template-init", ("updated" if updated else "template-init")
+    if harness_sync_action is not None:
+        return "workflow", harness_sync_action
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
     if not sync_agents_md:
         if SYNC_PATHS_FULL not in text:
@@ -205,6 +211,32 @@ def ensure_claude_md(target: Path) -> str:
     sep = "" if text.endswith("\n") else "\n"
     f.write_text(f"{text}{sep}\n{IMPORT_LINE}\n", encoding="utf-8", newline="\n")
     return "appended"
+
+
+def check_existing_config_identity(target: Path, repo: str, default_branch: str) -> None:
+    """既存 config.json の github.repo / default_branch が対象と一致することを確認する。
+
+    別リポジトリからコピーした config や既定ブランチ変更前の config を再利用すると、
+    ワーカーが別リポジトリ・存在しないブランチを向くので、何も変更する前に止める。
+    """
+    dest = target / CONFIG_DEST
+    if not dest.exists():
+        return
+    try:
+        cfg = json.loads(dest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"{CONFIG_DEST} が JSON として不正: {e}。修正してから再実行すること") from e
+    gh = cfg.get("github", {}) if isinstance(cfg, dict) else {}
+    mismatches = []
+    if gh.get("repo") != repo:
+        mismatches.append(f"github.repo: config={gh.get('repo')!r} / 対象={repo!r}")
+    if gh.get("default_branch") != default_branch:
+        mismatches.append(f"github.default_branch: config={gh.get('default_branch')!r} / 対象={default_branch!r}")
+    if mismatches:
+        raise RuntimeError(
+            f"既存の {CONFIG_DEST} が対象リポジトリと一致しない: " + "; ".join(mismatches)
+            + "。config を修正してから再実行すること"
+        )
 
 
 def effective_config(target: Path) -> dict:
@@ -294,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{CONFIG_DEST} が既に存在するため SDD のみ(linear_team 空欄)としては導入できない。"
                 "linear_team に config の linear.team を指定して再実行すること"
             )
+        check_existing_config_identity(target, a.repo, a.default_branch)
         result = {"assets_synced": sync_assets(harness, target, sync_agents_md)}
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
         result["claude_md"] = ensure_claude_md(target)
