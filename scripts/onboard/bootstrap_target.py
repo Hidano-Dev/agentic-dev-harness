@@ -33,6 +33,9 @@ TEMPLATE_INIT_SYNC = Path(".github/workflows/orchestration-sync.yml")
 CONFIG_DEST = Path(".kiro/orchestration/config.json")
 SYNC_PATHS_FULL = 'SYNC_PATHS: ".claude .codex .kiro .agents AGENTS.md"'
 SYNC_PATHS_NO_AGENTS = 'SYNC_PATHS: ".claude .codex .kiro .agents"'
+# unity-sdd-template 生成先の orchestration-sync.yml は同期パスをループに直書きしている
+TEMPLATE_INIT_LOOP_FULL = "for p in .claude .codex .kiro .agents AGENTS.md; do"
+TEMPLATE_INIT_LOOP_NO_AGENTS = "for p in .claude .codex .kiro .agents; do"
 
 CLAUDE_MD_NEW = f"""<!--
   SDD ワークフローと Git 運用ルールは agentic-dev-harness から配布される
@@ -64,37 +67,40 @@ def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
     return synced
 
 
+def exclude_agents_md(workflow: Path, full_line: str, no_agents_line: str) -> str:
+    """既存の同期ワークフローから AGENTS.md を外す。戻り値: updated / existing。"""
+    text = workflow.read_text(encoding="utf-8")
+    if full_line in text:
+        workflow.write_text(text.replace(full_line, no_agents_line), encoding="utf-8", newline="\n")
+        return "updated"
+    if no_agents_line in text:
+        return "existing"
+    raise RuntimeError(
+        f"{workflow.name} の同期パス指定が想定と異なるため AGENTS.md を除外できない。"
+        f"手動で AGENTS.md を同期対象から外してから再実行すること(期待した行: {full_line!r})"
+    )
+
+
 def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tuple[str, str]:
     """戻り値: (sync 方式, 今回の操作)。
 
     方式は registry の sync フィールドに対応(workflow / template-init)。
-    操作は written(新規配置) / updated(既存の SYNC_PATHS から AGENTS.md を除外) /
-    existing(既存を維持) / template-init(生成先の orchestration-sync.yml を使用)。
+    操作は written(新規配置) / updated(既存の同期ワークフローから AGENTS.md を除外) /
+    existing(既存を維持) / template-init(生成先の orchestration-sync.yml をそのまま使用)。
     """
+    # 既存の同期ワークフローが AGENTS.md を同期し続けると、今回維持した独自 AGENTS.md が
+    # 次回の同期で上書きされるので、sync_agents_md=false なら同期対象からも除外する。
+    # 除外できない(行が想定と異なる)場合は成功扱いにせず失敗させ、手動修正を求める
     if (target / TEMPLATE_INIT_SYNC).exists():
-        if not sync_agents_md:
-            # orchestration-sync.yml は同期パスを固定で持つため、ここからは変更できない
-            print(
-                "::warning::orchestration-sync.yml は AGENTS.md も同期します。独自の AGENTS.md を"
-                "維持するには生成先側で同期対象から外してください",
-                file=sys.stderr,
-            )
-        return "template-init", "template-init"
+        if sync_agents_md:
+            return "template-init", "template-init"
+        action = exclude_agents_md(target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS)
+        return "template-init", ("updated" if action == "updated" else "template-init")
     dest = target / SYNC_DEST
     if dest.exists():
         if sync_agents_md:
             return "workflow", "existing"
-        # 既存の同期ワークフローが AGENTS.md を同期し続けると、今回維持した独自 AGENTS.md が
-        # 次回の Harness Sync で上書きされるので、SYNC_PATHS からも除外する
-        text = dest.read_text(encoding="utf-8")
-        if SYNC_PATHS_FULL in text:
-            dest.write_text(text.replace(SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS), encoding="utf-8", newline="\n")
-            return "workflow", "updated"
-        if SYNC_PATHS_NO_AGENTS in text:
-            return "workflow", "existing"
-        raise RuntimeError(
-            f"{SYNC_DEST} の SYNC_PATHS 行が想定と異なるため AGENTS.md を除外できない。手動で修正すること"
-        )
+        return "workflow", exclude_agents_md(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS)
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
     if not sync_agents_md:
         if SYNC_PATHS_FULL not in text:
@@ -168,7 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     result = {
         "assets_synced": sync_assets(harness, target, sync_agents_md),
     }
-    result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
+    try:
+        result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
+    except RuntimeError as e:
+        print(f"::error::{e}", file=sys.stderr)
+        return 1
     result["claude_md"] = ensure_claude_md(target)
     result["config"] = write_config(harness, target, a)
 

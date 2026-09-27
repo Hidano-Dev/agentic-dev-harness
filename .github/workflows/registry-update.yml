@@ -32,8 +32,9 @@ on:
         options: [keep, pilot, active, paused]
         default: keep
 
+# Onboard Repository と同じ group で台帳更新を直列化する
 concurrency:
-  group: registry-update
+  group: harness-registry
   cancel-in-progress: false
 
 jobs:
@@ -66,5 +67,17 @@ jobs:
           git add registry/repos.yaml
           git diff --cached --quiet && { echo "変更なし"; exit 0; }
           git commit -m "chore(registry): update $NAME"
-          git pull --rebase origin "$REF_NAME"
-          git push origin "HEAD:$REF_NAME"
+          # 直列化済みだが、念のため競合時はリモート最新の上で更新をやり直す
+          attempt=0
+          until git push origin "HEAD:$REF_NAME"; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "::error::push が競合し続けています"; exit 1; fi
+            git fetch -q origin "$REF_NAME"
+            git reset -q --hard "origin/$REF_NAME"
+            python3 scripts/onboard/registry.py update \
+              --name "$NAME" --routine-id "$ROUTINE_ID" --config "$CONFIG" --status "$STATUS"
+            git add registry/repos.yaml
+            git diff --cached --quiet && { echo "リモート側で既に反映済み"; exit 0; }
+            git commit -q -m "chore(registry): update $NAME"
+            sleep $((attempt * 5))
+          done

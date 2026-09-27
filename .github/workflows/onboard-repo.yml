@@ -71,8 +71,10 @@ on:
         type: boolean
         default: false
 
+# registry/repos.yaml を末尾追記で更新するため、対象リポジトリが異なる実行同士や
+# Registry Update とも同じ group で直列化する(導入は稀な操作なので待たせてよい)
 concurrency:
-  group: onboard-${{ inputs.target_repo }}
+  group: harness-registry
   cancel-in-progress: false
 
 env:
@@ -174,6 +176,7 @@ jobs:
             --review-bot "$REVIEW_BOT" --sync-agents-md "$SYNC_AGENTS_MD" \
             --result /tmp/bootstrap.json
           echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
+          echo "config=$(jq -r .config /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
 
       - name: Commit and open PR (or push) in target
         id: publish
@@ -209,7 +212,7 @@ jobs:
 
           # 導入 PR が開いたままなら二重に作らない(ブランチ接頭辞で判定)
           existing=$(gh pr list -R "$REPO" --state open --json url,headRefName \
-            --jq --arg p "$ONBOARD_BRANCH" '.[] | select(.headRefName | startswith($p)) | .url' | head -n1)
+            | jq -r --arg p "$ONBOARD_BRANCH" '[.[] | select(.headRefName | startswith($p)) | .url] | first // empty')
           if [ -n "$existing" ]; then
             echo "::error::導入 PR が既に開いています: $existing — 先にマージまたはクローズしてください"
             exit 1
@@ -236,7 +239,7 @@ jobs:
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
             case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
               written)       echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
-              updated)       echo "- 既存の \`harness-sync.yml\` の SYNC_PATHS から AGENTS.md を除外" ;;
+              updated)       echo "- 既存の同期ワークフローの同期対象から AGENTS.md を除外" ;;
               template-init) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
               *)             echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
             esac
@@ -259,41 +262,60 @@ jobs:
           echo "pr_url=$url" >> "$GITHUB_OUTPUT"
           echo "PR: $url"
 
+      # 台帳更新は Registry Update と共通の concurrency group(harness-registry)で直列化して
+      # いるが、念のため push 競合時はリモートの最新から台帳を作り直して再試行する
       - name: Register in registry/repos.yaml
         id: registry
         env:
           NAME: ${{ steps.target.outputs.name }}
           REPO: ${{ steps.target.outputs.repo }}
           SYNC_MODE: ${{ steps.bootstrap.outputs.sync_mode }}
+          CONFIG_RESULT: ${{ steps.bootstrap.outputs.config }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
           PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "$SDD_ONLY" = "true" ]; then
-            python3 scripts/onboard/registry.py add --sdd-only \
-              --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
-              --date "$(date -u +%F)" --pr-url "$PR_URL" | tee /tmp/registry.log
-          else
-            if [ -n "$PUSHED_TO" ]; then config_state=true; else config_state=pending; fi
-            python3 scripts/onboard/registry.py add \
-              --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
-              --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
-              --needs-human needs-human --needs-local "$NEEDS_LOCAL" \
-              --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
-              --date "$(date -u +%F)" --pr-url "$PR_URL" | tee /tmp/registry.log
-          fi
-
+          # config が既定ブランチに存在する状態(直接 push 済み、または導入前から存在)なら true、
+          # 導入 PR の中で新規作成した場合はマージ待ちなので pending
+          if [ -n "$PUSHED_TO" ] || [ "$CONFIG_RESULT" = "exists" ]; then config_state=true; else config_state=pending; fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add registry/repos.yaml
-          if git diff --cached --quiet; then
-            echo "note=$(cat /tmp/registry.log)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m "chore(registry): add $NAME (onboarded via workflow)"
-          git pull --rebase origin "$REF_NAME"
-          git push origin "HEAD:$REF_NAME"
-          echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+          date_utc=$(date -u +%F)
+
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            git fetch -q origin "$REF_NAME"
+            git reset -q --hard "origin/$REF_NAME"
+            if [ "$SDD_ONLY" = "true" ]; then
+              python3 scripts/onboard/registry.py add --sdd-only \
+                --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
+                --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
+            else
+              python3 scripts/onboard/registry.py add \
+                --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
+                --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" \
+                --needs-human needs-human --needs-local "$NEEDS_LOCAL" \
+                --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
+                --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
+            fi
+            git add registry/repos.yaml
+            if git diff --cached --quiet; then
+              echo "note=$(cat /tmp/registry.log)" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            git commit -q -m "chore(registry): add $NAME (onboarded via workflow)"
+            if git push origin "HEAD:$REF_NAME"; then
+              echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            if [ "$attempt" -ge 5 ]; then
+              echo "::error::registry/repos.yaml の push が $attempt 回競合しました。Registry Update または手動で登録してください"
+              exit 1
+            fi
+            echo "push が競合したため再試行します($attempt)"
+            sleep $((attempt * 5))
+          done
 
       - name: Write summary (remaining manual steps + Routine sheet)
         env:
