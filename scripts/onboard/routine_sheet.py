@@ -38,13 +38,13 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
     out.append("## 自動で行ったこと\n")
     if result:
         out.append(f"- 配布物の同期: {', '.join(result.get('assets_synced', [])) or '(なし)'}")
-        mode = result.get("sync_mode")
-        if result.get("sync_workflow_written"):
-            out.append("- 同期ワークフロー: `.github/workflows/harness-sync.yml` を配置")
-        elif mode == "template-init":
-            out.append("- 同期ワークフロー: unity-sdd-template 生成先(`orchestration-sync.yml` 既存)のため配置せず")
-        else:
-            out.append("- 同期ワークフロー: 既存の `harness-sync.yml` を維持")
+        sync_msg = {
+            "written": "`.github/workflows/harness-sync.yml` を配置",
+            "updated": "既存の `harness-sync.yml` の SYNC_PATHS から AGENTS.md を除外",
+            "existing": "既存の `harness-sync.yml` を維持",
+            "template-init": "unity-sdd-template 生成先(`orchestration-sync.yml` 既存)のため配置せず",
+        }
+        out.append(f"- 同期ワークフロー: {sync_msg.get(result.get('sync_workflow'), result.get('sync_workflow'))}")
         claude_md = {"created": "新規作成", "appended": "import 行を追記", "unchanged": "変更なし(import 済み)"}
         out.append(f"- `CLAUDE.md`: {claude_md.get(result.get('claude_md'), result.get('claude_md'))}")
         cfg = {

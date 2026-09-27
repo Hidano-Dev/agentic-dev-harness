@@ -66,8 +66,8 @@ def render_entry(a: argparse.Namespace) -> str:
         team: {yaml_str(a.team)}
         project: {project}
         labels:
-          needs_human: {a.needs_human}
-          needs_local: {a.needs_local}
+          needs_human: {yaml_str(a.needs_human)}
+          needs_local: {yaml_str(a.needs_local)}
       routine:
         name: {yaml_str(a.routine_name)}
         cron: {yaml_str(a.cron)}   # UTC

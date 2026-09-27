@@ -64,21 +64,45 @@ def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
     return synced
 
 
-def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tuple[str, bool]:
-    """戻り値: (sync 方式, 今回書いたか)。方式は registry の sync フィールドに対応。"""
+def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tuple[str, str]:
+    """戻り値: (sync 方式, 今回の操作)。
+
+    方式は registry の sync フィールドに対応(workflow / template-init)。
+    操作は written(新規配置) / updated(既存の SYNC_PATHS から AGENTS.md を除外) /
+    existing(既存を維持) / template-init(生成先の orchestration-sync.yml を使用)。
+    """
     if (target / TEMPLATE_INIT_SYNC).exists():
-        return "template-init", False
-    if (target / SYNC_DEST).exists():
-        return "workflow", False
+        if not sync_agents_md:
+            # orchestration-sync.yml は同期パスを固定で持つため、ここからは変更できない
+            print(
+                "::warning::orchestration-sync.yml は AGENTS.md も同期します。独自の AGENTS.md を"
+                "維持するには生成先側で同期対象から外してください",
+                file=sys.stderr,
+            )
+        return "template-init", "template-init"
+    dest = target / SYNC_DEST
+    if dest.exists():
+        if sync_agents_md:
+            return "workflow", "existing"
+        # 既存の同期ワークフローが AGENTS.md を同期し続けると、今回維持した独自 AGENTS.md が
+        # 次回の Harness Sync で上書きされるので、SYNC_PATHS からも除外する
+        text = dest.read_text(encoding="utf-8")
+        if SYNC_PATHS_FULL in text:
+            dest.write_text(text.replace(SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS), encoding="utf-8", newline="\n")
+            return "workflow", "updated"
+        if SYNC_PATHS_NO_AGENTS in text:
+            return "workflow", "existing"
+        raise RuntimeError(
+            f"{SYNC_DEST} の SYNC_PATHS 行が想定と異なるため AGENTS.md を除外できない。手動で修正すること"
+        )
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
     if not sync_agents_md:
         if SYNC_PATHS_FULL not in text:
             raise RuntimeError("harness-sync.yml の SYNC_PATHS 行が想定と異なる")
         text = text.replace(SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS)
-    dest = target / SYNC_DEST
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8", newline="\n")
-    return "workflow", True
+    return "workflow", "written"
 
 
 def ensure_claude_md(target: Path) -> str:
@@ -144,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     result = {
         "assets_synced": sync_assets(harness, target, sync_agents_md),
     }
-    result["sync_mode"], result["sync_workflow_written"] = place_sync_workflow(harness, target, sync_agents_md)
+    result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
     result["claude_md"] = ensure_claude_md(target)
     result["config"] = write_config(harness, target, a)
 

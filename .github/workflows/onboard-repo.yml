@@ -157,13 +157,18 @@ jobs:
           token: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
           path: target
 
+      # 対象リポジトリ由来の値(リポジトリ名・既定ブランチ名など)は run 本文へ `${{ }}` で
+      # 直接展開せず、必ず env 経由の引用済み変数として渡す(スクリプトインジェクション対策)
       - name: Bootstrap target (assets, sync workflow, CLAUDE.md, config.json)
         id: bootstrap
+        env:
+          REPO: ${{ steps.target.outputs.repo }}
+          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
         run: |
           python3 scripts/onboard/bootstrap_target.py \
             --harness . --target target \
-            --repo "${{ steps.target.outputs.repo }}" \
-            --default-branch "${{ steps.target.outputs.default_branch }}" \
+            --repo "$REPO" \
+            --default-branch "$DEFAULT_BRANCH" \
             --linear-team "$LINEAR_TEAM" --linear-project "$LINEAR_PROJECT" \
             --needs-local "$NEEDS_LOCAL" --checks-fast "$CHECKS_FAST" \
             --review-bot "$REVIEW_BOT" --sync-agents-md "$SYNC_AGENTS_MD" \
@@ -178,6 +183,7 @@ jobs:
           REPO: ${{ steps.target.outputs.repo }}
           DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
           DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/onboarding.md
         run: |
           git config user.name "github-actions[bot]"
@@ -201,13 +207,21 @@ jobs:
             exit 0
           fi
 
-          existing=$(gh pr list -R "$REPO" --head "$ONBOARD_BRANCH" --state open --json url --jq '.[0].url // empty')
+          # 導入 PR が開いたままなら二重に作らない(ブランチ接頭辞で判定)
+          existing=$(gh pr list -R "$REPO" --state open --json url,headRefName \
+            --jq --arg p "$ONBOARD_BRANCH" '.[] | select(.headRefName | startswith($p)) | .url' | head -n1)
           if [ -n "$existing" ]; then
             echo "::error::導入 PR が既に開いています: $existing — 先にマージまたはクローズしてください"
             exit 1
           fi
-          git checkout -b "$ONBOARD_BRANCH"
-          git push --force -u origin "$ONBOARD_BRANCH"
+          # 実行ごとに固有のブランチ名にし、既存ブランチを force で上書きしない
+          branch="$ONBOARD_BRANCH-$RUN_NUMBER"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "::error::ブランチ $branch が既に存在します(同じ run 番号での再実行)。削除してから再実行してください"
+            exit 1
+          fi
+          git checkout -b "$branch"
+          git push -u origin "$branch"
 
           {
             if [ "$SDD_ONLY" = "true" ]; then
@@ -220,10 +234,11 @@ jobs:
             echo "## 内容"
             echo
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
-            case "$(jq -r .sync_mode /tmp/bootstrap.json)/$(jq -r .sync_workflow_written /tmp/bootstrap.json)" in
-              workflow/true)   echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
-              template-init/*) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
-              *)               echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
+            case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
+              written)       echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
+              updated)       echo "- 既存の \`harness-sync.yml\` の SYNC_PATHS から AGENTS.md を除外" ;;
+              template-init) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
+              *)             echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
             esac
             echo "- \`CLAUDE.md\`: $(jq -r .claude_md /tmp/bootstrap.json)(\`@.claude/rules/sdd-workflow.md\` の import)"
             echo "- \`.kiro/orchestration/config.json\`: $(jq -r .config /tmp/bootstrap.json)"
@@ -239,7 +254,7 @@ jobs:
             echo "導入手順の全体: $DOCS_URL"
           } > /tmp/pr-body.md
 
-          url=$(gh pr create -R "$REPO" --base "$DEFAULT_BRANCH" --head "$ONBOARD_BRANCH" \
+          url=$(gh pr create -R "$REPO" --base "$DEFAULT_BRANCH" --head "$branch" \
             --title "chore: onboard agentic-dev-harness" --body-file /tmp/pr-body.md)
           echo "pr_url=$url" >> "$GITHUB_OUTPUT"
           echo "PR: $url"
@@ -252,6 +267,7 @@ jobs:
           SYNC_MODE: ${{ steps.bootstrap.outputs.sync_mode }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
           PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "$SDD_ONLY" = "true" ]; then
             python3 scripts/onboard/registry.py add --sdd-only \
@@ -275,8 +291,8 @@ jobs:
             exit 0
           fi
           git commit -m "chore(registry): add $NAME (onboarded via workflow)"
-          git pull --rebase origin "${{ github.ref_name }}"
-          git push origin "HEAD:${{ github.ref_name }}"
+          git pull --rebase origin "$REF_NAME"
+          git push origin "HEAD:$REF_NAME"
           echo "note=エントリを追加してコミット($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
 
       - name: Write summary (remaining manual steps + Routine sheet)
