@@ -13,7 +13,8 @@
   登録、Routine 設定シートの出力までを行う。`linear_team` 空欄で SDD ワークフローのみの導入
 - `.github/workflows/registry-update.yml`(**Registry Update**)— Routine ID・config・status を台帳へ直接反映
 - `scripts/onboard/` — 上記が使うスクリプト(標準ライブラリのみの Python。ローカルでも実行可)
-- `templates/consumer/harness-sync.yml` — 同期時に `config.json` の JSON 妥当性・プレースホルダ残り・
+- `templates/consumer/harness-sync.yml` — 同期先にシンボリックリンクがあればコピー前に失敗するステップ
+  (リンク先の無関係なファイルを上書きしない)と、同期後に `config.json` の JSON 妥当性・プレースホルダ残り・
   `CLAUDE.md` の import 行を検査して警告するステップを追加
 - `docs/onboarding.md` — 手順をワークフロー前提に書き換え(手動手順は末尾に残置)
 

@@ -40,6 +40,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 同期先(とその配下)にシンボリックリンクがあると cp -rf はリンク先へ書き込み、後続の
+      # git add -A / push が無関係なファイルの変更を既定ブランチへ直接反映してしまう。
+      # コピー前に検査し、リンクがあれば何もコピーせずに失敗する
+      - name: Refuse symlinks under sync targets
+        run: |
+          links=""
+          for p in $SYNC_PATHS; do
+            [ -e "$p" ] || [ -L "$p" ] || continue
+            found=$(find "$p" -type l -print)
+            [ -n "$found" ] && links="$links$found"$'\n'
+          done
+          if [ -n "$links" ]; then
+            echo "::error::同期先にシンボリックリンクがあるため同期を中止しました(リンクを外してから再実行してください): $(echo "$links" | tr '\n' ' ')"
+            exit 1
+          fi
+
       - name: Import latest harness assets
         run: |
           git clone --depth 1 --branch "$HARNESS_REF" --single-branch "https://github.com/${HARNESS_REPO}.git" /tmp/harness
