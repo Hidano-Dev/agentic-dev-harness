@@ -48,3 +48,24 @@ repos:
       新規 Unity プロジェクト用の GitHub テンプレート。テンプレート自身は配布物を持たず、
       生成先リポジトリが本リポジトリの main から取り込む。生成先で linear-worker を動かす場合は
       docs/onboarding.md の手順で config.json と Routine を追加する。
+
+  - name: FacialControl
+    github: Hidano-Dev/FacialControl
+    role: execution
+    sync: workflow   # .github/workflows/harness-sync.yml
+    harness:
+      config: pending   # 導入 PR マージ後に Registry Update で true にする
+      linear:
+        team: "Hidano"
+        project: "FacialControl"
+        labels:
+          needs_human: "needs-human"
+          needs_local: "needs-local"
+      routine:
+        name: "自律駆動ハーネス (FacialControl)"
+        cron: "52 * * * *"   # UTC
+        id: null   # Routine 作成後に Registry Update ワークフローで記入
+        connectors: [Linear]
+      status: pilot
+    notes: >-
+      2026-09-27 に Onboard Repository ワークフローで導入(PR: https://github.com/Hidano-Dev/FacialControl/pull/19)。
