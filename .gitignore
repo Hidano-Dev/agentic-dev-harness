@@ -16,3 +16,5 @@ Desktop.ini
 # Logs / temp
 *.log
 *.tmp
+__pycache__/
+*.pyc
