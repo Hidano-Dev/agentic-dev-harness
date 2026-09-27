@@ -56,9 +56,11 @@ docs/                   … 導入手順・運用メモ(配布されない)
 - 上書きマージなので、取り込み側が独自に追加したファイル(自作 skill、`.claude/settings.json`、
   `.kiro/specs/`、`.kiro/steering/`、`.kiro/orchestration/`)は残る。本リポジトリ側で**削除**した
   ファイルは自動では消えないので、削除は `docs/` の変更履歴に明記して手動で追従する
-- `AGENTS.md` に独自の追記があるリポジトリ(例: artgraph の節)は、同期対象から `AGENTS.md` を
-  外す(`harness-sync.yml` の `SYNC_PATHS`)。本リポジトリは公開(public)なので、GitHub Actions は
-  トークンなしで clone できる — **秘匿情報を本リポジトリに置かないこと**
+- `AGENTS.md` は配布版の先頭にマーカー行(`managed-by: agentic-dev-harness`)がある。取り込み側の
+  `AGENTS.md` にマーカーが無ければ独自ファイルとみなし、導入時も同期時も上書きしない(独自の追記を
+  したらマーカー行を消す。`SYNC_PATHS` の編集は不要)
+- 本リポジトリは公開(public)なので、GitHub Actions はトークンなしで clone できる —
+  **秘匿情報を本リポジトリに置かないこと**
 
 ## リポジトリ固有の設定(`.kiro/orchestration/config.json`)
 

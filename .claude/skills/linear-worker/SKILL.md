@@ -31,7 +31,7 @@ SDD フローに従う。本書はその上に載る「選定・承認・マー�
 | `linear.labels.needs_local` | ローカル環境・実機が必要。スキップして実機待ちキューへ | `needs-local` |
 | `github.repo` | `owner/name` | 必須 |
 | `github.default_branch` | 作業の起点ブランチ | `main` |
-| `checks.fast` | 一次ゲートでローカル実行するコマンド配列 | `[]` |
+| `checks.fast` | 一次ゲートでローカル実行するコマンド配列。空ならワーカーがリポジトリから推定する(§4 手順 1) | `[]` |
 | `review.bot` | 外部レビューボット(`name` / `summary_marker` / `retrigger_comment`)。null なら外部レビューなし | null |
 | `review.wait_minutes` | 外部レビューの待機期限(分) | 60 |
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
@@ -209,8 +209,11 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
 
 **一次ゲート(能動レビュー・セッション内で完結)**
 
-1. `checks.fast` の全コマンドがローカルで green(配列が空なら「該当なし」と記録する。
-   空のまま自動マージを有効化する運用は推奨しない)。
+1. `checks.fast` の全コマンドがローカルで green。配列が空なら、リポジトリの CI 定義
+   (`.github/workflows/`)・`package.json` の scripts・`Makefile` / `pyproject.toml` 等から
+   lint / typecheck / test に相当するコマンドを推定して実行し、**実行したコマンドを
+   PR コメントまたは §5 の報告に記録する**(config には書き戻さない。固定したい場合は
+   人間が `checks.fast` に入れる)。推定できるものが無ければ「該当なし」と記録する。
 2. `/code-review`(effort: high)を自分で実行し、CONFIRMED / PLAUSIBLE の全 finding を
    修正または理由付きで棄却として記録する。
 3. spec 由来の実装なら `/kiro:validate-impl` を実行し、指摘ゼロまたは対応済みであること。

@@ -5,6 +5,11 @@ Onboard Repository ワークフロー(.github/workflows/onboard-repo.yml)から
 bootstrap_target.py 経由で呼ばれる。雛形は
 `.claude/skills/linear-worker/templates/orchestration-config.json`。
 標準ライブラリのみ使用(ランナー・ローカルどちらでも動く)。
+
+フォームで決めるのはチーム名と外部レビューボットだけで、残りは規約で決める:
+- `linear.project` はリポジトリ名(owner/name の name)と同名
+- `linear.labels.*` は `needs-human` / `needs-local`(変えたければ生成後の config を編集)
+- `checks.fast` は空(空なら linear-worker が CI 定義・package.json 等から推定する)
 """
 from __future__ import annotations
 
@@ -16,9 +21,9 @@ from pathlib import Path
 TEMPLATE_REL = Path(".claude/skills/linear-worker/templates/orchestration-config.json")
 
 
-def split_checks(raw: str) -> list[str]:
-    """カンマ区切りの fast checks 文字列を配列にする(空要素は捨てる)。"""
-    return [c.strip() for c in raw.split(",") if c.strip()]
+def project_name(repo: str) -> str:
+    """owner/name → name。Linear プロジェクト名はリポジトリ名と同名にする規約。"""
+    return repo.rsplit("/", 1)[-1]
 
 
 def render(
@@ -27,9 +32,6 @@ def render(
     repo: str,
     default_branch: str,
     team: str,
-    project: str | None,
-    needs_local: str,
-    checks_fast: list[str],
     review_bot: str,
 ) -> dict:
     cfg = json.loads(json.dumps(template))  # deep copy(キー順は雛形どおり)
@@ -39,11 +41,9 @@ def render(
         "キーの意味は .claude/skills/linear-worker/SKILL.md の「設定」節。"
     )
     cfg["linear"]["team"] = team
-    cfg["linear"]["project"] = project or None
-    cfg["linear"]["labels"]["needs_local"] = needs_local
+    cfg["linear"]["project"] = project_name(repo)
     cfg["github"]["repo"] = repo
     cfg["github"]["default_branch"] = default_branch
-    cfg["checks"]["fast"] = checks_fast
     if review_bot == "none":
         cfg["review"]["bot"] = None
     elif review_bot != "codex":
@@ -57,9 +57,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", required=True, help="owner/name")
     ap.add_argument("--default-branch", default="main")
     ap.add_argument("--team", required=True)
-    ap.add_argument("--project", default="")
-    ap.add_argument("--needs-local", default="needs-local")
-    ap.add_argument("--checks-fast", default="", help="カンマ区切り")
     ap.add_argument("--review-bot", choices=["codex", "none"], default="codex")
     ap.add_argument("--out", help="出力先(省略時は stdout)")
     a = ap.parse_args(argv)
@@ -70,9 +67,6 @@ def main(argv: list[str] | None = None) -> int:
         repo=a.repo,
         default_branch=a.default_branch,
         team=a.team,
-        project=a.project.strip() or None,
-        needs_local=a.needs_local.strip() or "needs-local",
-        checks_fast=split_checks(a.checks_fast),
         review_bot=a.review_bot,
     )
     text = json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"

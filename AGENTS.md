@@ -1,3 +1,5 @@
+<!-- managed-by: agentic-dev-harness — このファイルは Harness Sync / Onboard Repository で上書きされる。プロジェクト固有の追記をする場合はこの行を削除すると同期対象から外れる -->
+
 # Agentic SDLC and Spec-Driven Development
 
 Kiro-style Spec-Driven Development on an agentic SDLC

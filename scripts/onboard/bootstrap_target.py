@@ -4,13 +4,16 @@
 Onboard Repository ワークフローが、対象リポジトリを `target/` に checkout した
 状態で呼ぶ。行うこと:
 
-1. 配布物(.claude .codex .kiro .agents [AGENTS.md])を上書きコピー
+1. 配布物(.claude .codex .kiro .agents AGENTS.md)を上書きコピー
+   - AGENTS.md は、対象に既にあってマーカー(AGENTS_MD_MARKER)を含まないものは
+     独自ファイルとみなし触らない(配布版にはマーカーが入っている)
 2. 同期ワークフロー(templates/consumer/harness-sync.yml)を配置
    - 既に harness-sync.yml / orchestration-sync.yml(unity-sdd-template 生成先)が
-     あれば置かない
+     あれば置かない。ただしマーカー判定を持たない旧版で、対象が独自 AGENTS.md を
+     維持している場合は、同期対象から AGENTS.md を外す(次回の同期で上書きされないように)
 3. ルート CLAUDE.md に `@.claude/rules/sdd-workflow.md` を保証
 4. `.kiro/orchestration/config.json` を生成(既にあれば触らない。`--linear-team` が
-   空なら SDD ワークフローのみの導入とみなし作らない)
+   空なら SDD ワークフローのみの導入とみなし作らない)。`linear.project` はリポジトリ名
 
 結果を JSON で `--result` に書く(ワークフローが PR 本文・サマリに使う)。
 """
@@ -23,14 +26,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_config import TEMPLATE_REL, render, split_checks  # noqa: E402
+from render_config import TEMPLATE_REL, project_name, render  # noqa: E402
 
 IMPORT_LINE = "@.claude/rules/sdd-workflow.md"
 ASSET_DIRS = [".claude", ".codex", ".kiro", ".agents"]
+AGENTS_MD = "AGENTS.md"
+# 配布版 AGENTS.md の先頭コメントに含まれる文字列。templates/consumer/harness-sync.yml の
+# AGENTS_MD_MARKER と同じ値にする(同期ワークフロー側も同じ判定で上書きを避ける)
+AGENTS_MD_MARKER = "managed-by: agentic-dev-harness"
 SYNC_TEMPLATE = Path("templates/consumer/harness-sync.yml")
 SYNC_DEST = Path(".github/workflows/harness-sync.yml")
 TEMPLATE_INIT_SYNC = Path(".github/workflows/orchestration-sync.yml")
 CONFIG_DEST = Path(".kiro/orchestration/config.json")
+# 既存の同期ワークフローを「本 harness の同期経路」と認める SYNC_PATHS 指定(新旧両方)
 SYNC_PATHS_FULL = 'SYNC_PATHS: ".claude .codex .kiro .agents AGENTS.md"'
 SYNC_PATHS_NO_AGENTS = 'SYNC_PATHS: ".claude .codex .kiro .agents"'
 # unity-sdd-template 生成先の orchestration-sync.yml は同期パスをループに直書きしている
@@ -88,8 +96,17 @@ def copy_path(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
-    paths = ASSET_DIRS + (["AGENTS.md"] if sync_agents_md else [])
+def has_agents_md_marker(path: Path) -> bool:
+    return AGENTS_MD_MARKER in path.read_text(encoding="utf-8", errors="replace")
+
+
+def sync_assets(harness: Path, target: Path) -> tuple[list[str], str]:
+    """戻り値: (同期したパス, AGENTS.md の扱い: synced / kept)。"""
+    paths = ASSET_DIRS + [AGENTS_MD]
+    # 配布元 AGENTS.md にマーカーが無いと、配布した先で次回から「独自ファイル」と誤認されて
+    # 更新が届かなくなる。配布元側の欠落はここで止める
+    if (harness / AGENTS_MD).exists() and not has_agents_md_marker(harness / AGENTS_MD):
+        raise RuntimeError(f"配布元の {AGENTS_MD} にマーカー({AGENTS_MD_MARKER!r})が無い。先頭のマーカー行を戻すこと")
     # 途中で失敗して半端な状態を残さないよう、コピー前に全同期先を検査する
     for p in paths:
         links = find_symlinks(target / p)
@@ -100,14 +117,23 @@ def sync_assets(harness: Path, target: Path, sync_agents_md: bool) -> list[str]:
                 "リンクを外してから再実行すること"
             )
     synced: list[str] = []
+    agents_md = "synced"
     for p in paths:
         src = harness / p
         if not src.exists():
             print(f"::warning::{p} は配布元に存在しないためスキップ", file=sys.stderr)
             continue
+        if p == AGENTS_MD and (target / p).exists() and not has_agents_md_marker(target / p):
+            # 独自の AGENTS.md(マーカー無し)は尊重する。同期ワークフローも同じ判定で上書きしない
+            print(
+                f"::notice::対象の {AGENTS_MD} にマーカー({AGENTS_MD_MARKER!r})が無いため独自ファイルとみなし、上書きしない",
+                file=sys.stderr,
+            )
+            agents_md = "kept"
+            continue
         copy_path(src, target / p)
         synced.append(p)
-    return synced
+    return synced, agents_md
 
 
 def is_template_init_sync(path: Path) -> bool:
@@ -136,34 +162,43 @@ def is_template_init_sync(path: Path) -> bool:
     return True
 
 
-def set_agents_md_sync(workflow: Path, full_line: str, no_agents_line: str, want_agents_md: bool) -> str:
-    """既存の同期ワークフローの AGENTS.md 同期を入力どおりに揃える。戻り値: updated / existing。
+def protect_custom_agents_md(workflow: Path, full_line: str, no_agents_line: str, agents_md_kept: bool) -> str:
+    """マーカー判定を持たない旧版の同期ワークフローで、独自 AGENTS.md が上書きされないようにする。
 
-    false なら AGENTS.md を同期対象から外し、true なら(過去に外していても)戻す。
+    旧版は SYNC_PATHS(またはループ)に AGENTS.md を含み、マーカーの文字列を持たない。
+    対象が独自 AGENTS.md(マーカー無し)を維持している場合、旧版のまま次回の同期が走ると
+    無条件の cp で上書きされるので、同期対象から AGENTS.md を外して守る。
+    ワークフロー本体はユーザーの編集があり得るため、この 1 行以外は書き換えない。
+    戻り値: updated(外した) / existing(変更なし)。
     """
     text = workflow.read_text(encoding="utf-8")
-    current, wanted = (full_line, no_agents_line) if not want_agents_md else (no_agents_line, full_line)
-    if wanted in text:
+    if AGENTS_MD_MARKER in text or full_line not in text:
+        return "existing"  # 新版、または既に AGENTS.md を外してある
+    if not agents_md_kept:
+        # 配布版(マーカー付き)を使っている対象なら旧版でも同じ内容を上書きするだけで害はない。
+        # 将来マーカーを消して独自化したときに守られないので差し替えは勧めておく
+        print(
+            f"::warning::{workflow.name} は AGENTS.md をマーカー判定なしで上書きする旧版です。"
+            "AGENTS.md を独自化する予定があるなら templates/consumer/harness-sync.yml の新版に差し替えてください",
+            file=sys.stderr,
+        )
         return "existing"
-    if current in text:
-        workflow.write_text(text.replace(current, wanted), encoding="utf-8", newline="\n")
-        return "updated"
-    raise RuntimeError(
-        f"{workflow.name} の同期パス指定が想定と異なるため AGENTS.md の同期設定を変更できない。"
-        f"手動で揃えてから再実行すること(期待した行: {full_line!r} または {no_agents_line!r})"
+    workflow.write_text(text.replace(full_line, no_agents_line), encoding="utf-8", newline="\n")
+    print(
+        f"::notice::{workflow.name} は旧版のため、独自の AGENTS.md を守るよう同期対象から AGENTS.md を外した"
+        "(新版に差し替えればマーカー判定で自動的に守られる)",
+        file=sys.stderr,
     )
+    return "updated"
 
 
-def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tuple[str, str]:
+def place_sync_workflow(harness: Path, target: Path, agents_md_kept: bool) -> tuple[str, str]:
     """戻り値: (sync 方式, 今回の操作)。
 
     方式は registry の sync フィールドに対応(workflow / template-init)。
-    操作は written(新規配置) / updated(既存の同期ワークフローから AGENTS.md を除外) /
-    existing(既存を維持) / template-init(生成先の orchestration-sync.yml をそのまま使用)。
+    操作は written(新規配置) / existing(既存を維持) / updated(旧版の同期対象から
+    AGENTS.md を外した) / template-init(生成先の orchestration-sync.yml をそのまま使用)。
     """
-    # 既存の同期ワークフローの AGENTS.md 同期は入力(sync_agents_md)に揃える:
-    # false なら除外(維持した独自 AGENTS.md が次回の同期で上書きされないように)、
-    # true なら過去に除外していても戻す。揃えられない(行が想定と異なる)場合は失敗させる
     assert_regular_dest(target, SYNC_DEST)
     dest = target / SYNC_DEST
     harness_sync_action = None
@@ -177,23 +212,18 @@ def place_sync_workflow(harness: Path, target: Path, sync_agents_md: bool) -> tu
                 f"(配布元の参照が無い、または SYNC_PATHS が {SYNC_PATHS_FULL!r} / {SYNC_PATHS_NO_AGENTS!r} の"
                 "いずれでもない)。templates/consumer/harness-sync.yml で置き換えてから再実行すること"
             )
-        harness_sync_action = set_agents_md_sync(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, sync_agents_md)
+        harness_sync_action = protect_custom_agents_md(dest, SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS, agents_md_kept)
     if is_template_init_sync(target / TEMPLATE_INIT_SYNC):
-        # 生成先の同期ワークフロー。harness-sync.yml と共存している場合は両方を入力どおりに揃える
-        # (上で処理済み)ので、どちらか一方だけが AGENTS.md を同期し続けることはない
+        # 生成先の同期ワークフロー。harness-sync.yml と共存している場合は両方を守る(上で処理済み)
         assert_regular_dest(target, TEMPLATE_INIT_SYNC)
-        action = set_agents_md_sync(
-            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, sync_agents_md
+        action = protect_custom_agents_md(
+            target / TEMPLATE_INIT_SYNC, TEMPLATE_INIT_LOOP_FULL, TEMPLATE_INIT_LOOP_NO_AGENTS, agents_md_kept
         )
         updated = action == "updated" or harness_sync_action == "updated"
         return "template-init", ("updated" if updated else "template-init")
     if harness_sync_action is not None:
         return "workflow", harness_sync_action
     text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
-    if not sync_agents_md:
-        if SYNC_PATHS_FULL not in text:
-            raise RuntimeError("harness-sync.yml の SYNC_PATHS 行が想定と異なる")
-        text = text.replace(SYNC_PATHS_FULL, SYNC_PATHS_NO_AGENTS)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8", newline="\n")
     return "workflow", "written"
@@ -256,7 +286,7 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
 
 
 def effective_config(target: Path) -> dict:
-    """config.json の実値のうち台帳に載せる項目(team / project / labels)を返す。"""
+    """config.json の実値のうち台帳・Linear 準備に使う項目(team / project / labels)を返す。"""
     cfg = json.loads((target / CONFIG_DEST).read_text(encoding="utf-8"))
     linear = cfg.get("linear") or {}
     labels = linear.get("labels") or {}
@@ -276,18 +306,15 @@ def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
     dest = target / CONFIG_DEST
     if dest.exists():
         # 既存 config は変更しない。台帳にはフォーム入力ではなく既存 config の実値を載せるので、
-        # 食い違いは警告して知らせる(直したければ config を編集して再実行)
+        # 食い違いは警告して知らせる(直したければ config を編集して再実行)。
+        # ラベル名は既存 config の値をそのまま使う(フォームでは決めない)ので比較しない
         eff = effective_config(target)
-        wanted = {
-            "team": a.linear_team.strip(),
-            "project": a.linear_project.strip() or None,
-            "needs_local": a.needs_local.strip() or "needs-local",
-        }
-        diffs = [f"{k}: config={eff.get(k)!r} / 入力={v!r}" for k, v in wanted.items() if eff.get(k) != v]
+        wanted = {"team": a.linear_team.strip(), "project": project_name(a.repo)}
+        diffs = [f"{k}: config={eff.get(k)!r} / 規約={v!r}" for k, v in wanted.items() if eff.get(k) != v]
         if diffs:
             print(
-                "::warning::既存の config.json とフォーム入力が一致しません(config を優先し、台帳にも config の値を"
-                "登録します): " + "; ".join(diffs),
+                "::warning::既存の config.json とフォーム入力・規約が一致しません(config を優先し、台帳にも config の"
+                "値を登録します): " + "; ".join(diffs),
                 file=sys.stderr,
             )
         return "exists"
@@ -296,10 +323,7 @@ def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
         template,
         repo=a.repo,
         default_branch=a.default_branch,
-        team=a.linear_team,
-        project=a.linear_project.strip() or None,
-        needs_local=a.needs_local.strip() or "needs-local",
-        checks_fast=split_checks(a.checks_fast),
+        team=a.linear_team.strip(),
         review_bot=a.review_bot,
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -314,11 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", required=True, help="owner/name")
     ap.add_argument("--default-branch", default="main")
     ap.add_argument("--linear-team", default="", help="空なら config.json を作らない(SDD のみ)")
-    ap.add_argument("--linear-project", default="")
-    ap.add_argument("--needs-local", default="needs-local")
-    ap.add_argument("--checks-fast", default="")
     ap.add_argument("--review-bot", choices=["codex", "none"], default="codex")
-    ap.add_argument("--sync-agents-md", default="true", help="true / false")
     ap.add_argument("--result", help="結果 JSON の書き出し先")
     a = ap.parse_args(argv)
 
@@ -330,7 +350,6 @@ def main(argv: list[str] | None = None) -> int:
     if not target.is_dir():
         print(f"::error::対象ディレクトリが無い: {target}", file=sys.stderr)
         return 1
-    sync_agents_md = str(a.sync_agents_md).lower() == "true"
 
     try:
         # 書き込み先の事前検査(コピー前に全部見る: 途中で失敗して半端な状態を残さない)
@@ -340,12 +359,15 @@ def main(argv: list[str] | None = None) -> int:
         # 台帳(harness: null)と実態が食い違うので拒否する
         if not a.linear_team.strip() and (target / CONFIG_DEST).exists():
             raise RuntimeError(
-                f"{CONFIG_DEST} が既に存在するため SDD のみ(linear_team 空欄)としては導入できない。"
-                "linear_team に config の linear.team を指定して再実行すること"
+                f"{CONFIG_DEST} が既に存在するため SDD のみ(sdd_only)としては導入できない。"
+                "sdd_only を外して再実行すること"
             )
         check_existing_config_identity(target, a.repo, a.default_branch)
-        result = {"assets_synced": sync_assets(harness, target, sync_agents_md)}
-        result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target, sync_agents_md)
+        result: dict = {}
+        result["assets_synced"], result["agents_md"] = sync_assets(harness, target)
+        result["sync_mode"], result["sync_workflow"] = place_sync_workflow(
+            harness, target, agents_md_kept=result["agents_md"] == "kept"
+        )
         result["claude_md"] = ensure_claude_md(target)
         result["config"] = write_config(harness, target, a)
         # 台帳に載せる実値(新規生成でも既存でも config.json から読む)

@@ -38,9 +38,11 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
     out.append("## 自動で行ったこと\n")
     if result:
         out.append(f"- 配布物の同期: {', '.join(result.get('assets_synced', [])) or '(なし)'}")
+        if result.get("agents_md") == "kept":
+            out.append("- `AGENTS.md`: 対象の独自ファイル(マーカー無し)を維持。同期ワークフローも上書きしない")
         sync_msg = {
             "written": "`.github/workflows/harness-sync.yml` を配置",
-            "updated": "既存の同期ワークフロー(`harness-sync.yml` / `orchestration-sync.yml`)の AGENTS.md 同期設定を入力どおりに更新",
+            "updated": "既存の同期ワークフロー(旧版)の同期対象から `AGENTS.md` を外した(独自ファイルを守るため。新版に差し替えればマーカー判定で自動的に守られる)",
             "existing": "既存の `harness-sync.yml` を維持",
             "template-init": "unity-sdd-template 生成先(`orchestration-sync.yml` 既存)のため配置せず",
         }
@@ -71,12 +73,21 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
         out.append("")
         out.append(
             "SDD ワークフローのみの導入なので Routine は不要。後から linear-worker を動かす場合は "
-            "Onboard Repository を `linear_team` 付きで再実行する(配布物は同期済みなので config と台帳だけ差分になる)。"
+            "Onboard Repository を `sdd_only` を外して再実行する(配布物は同期済みなので config と台帳だけ差分になる)。"
         )
         return "\n".join(out) + "\n"
     step = 1
     if a.pr_url:
-        out.append(f"{step}. 対象リポジトリの PR をレビューしてマージする(`config.json` の値を確認。`checks.fast` が空なら CI 相当のコマンドを入れる)")
+        out.append(
+            f"{step}. 対象リポジトリの PR をレビューしてマージする(`config.json` の値を確認。"
+            "`checks.fast` は空のままでもワーカーが CI 定義等から推定する。固定したいコマンドがあれば入れる)"
+        )
+        step += 1
+    if a.linear_manual:
+        out.append(
+            f"{step}. Linear で手動作成する(`LINEAR_API_KEY` 未設定のため自動化されなかった): {a.linear_manual}。"
+            "プロジェクトが無いとワーカーは Issue を 1 件も拾えない"
+        )
         step += 1
     out.append(f"{step}. GitHub 側: PR で CI が走ることを確認する。外部レビューボット(例: Codex)を使うなら GitHub App をインストールし、PR で動くことを 1 回確認する")
     step += 1
@@ -119,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pr-url", default="")
     ap.add_argument("--pushed-to", default="", help="直接 push したブランチ名")
     ap.add_argument("--linear-note", default="")
+    ap.add_argument("--linear-manual", default="", help="Linear で手動作成が必要なもの(API キー未設定時)")
     ap.add_argument("--registry-note", default="")
     ap.add_argument("--sdd-only", action="store_true", help="linear-worker なし(Routine シートを出さない)")
     ap.add_argument("--entry-name", default="", help="台帳上の実際のエントリ名(省略時はリポジトリ名)")

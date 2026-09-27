@@ -2,7 +2,7 @@
 
 対象: 本リポジトリの配布物を取り込み、Linear 駆動の自律ワーカー(linear-worker)を
 定期実行で動かしたいリポジトリ。SDD ワークフローだけ使いたい場合は手順 1 で
-`linear_team` を空欄にする(config.json が作られないので linear-worker は起動せず、
+`sdd_only` を on にする(config.json が作られないので linear-worker は起動せず、
 Git 運用も従来どおりユーザー承認制になる)。
 
 ファイルのコピー・項目埋め・台帳登録は本リポジトリの Actions(**Onboard Repository**)が
@@ -21,7 +21,13 @@ Git 運用も従来どおりユーザー承認制になる)。
   | secret | 用途 | 作り方 |
   |---|---|---|
   | `HARNESS_ONBOARD_TOKEN` | 対象リポジトリへ配布物を push し PR を作る | GitHub の fine-grained PAT。Resource owner は組織(Hidano-Dev)、Repository access は対象になり得るリポジトリ(All repositories でよい)、Permissions は **Contents: Read/Write、Pull requests: Read/Write、Workflows: Read/Write、Metadata: Read**。Workflows 権限が無いと `.github/workflows/harness-sync.yml` を push できない |
-  | `LINEAR_API_KEY`(任意) | Linear のチーム / プロジェクトの存在確認とラベル作成 | Linear の Settings → API → Personal API keys。無ければその部分だけスキップされ、ラベルは手で作る |
+  | `LINEAR_API_KEY`(任意) | Linear のチーム存在確認、プロジェクト・ラベルの作成 | Linear の Settings → API → Personal API keys。無ければその部分だけスキップされ、プロジェクトとラベルは手で作る |
+
+- **本リポジトリの Actions variable**(同じ画面の Variables タブ。任意):
+
+  | variable | 用途 |
+  |---|---|
+  | `LINEAR_DEFAULT_TEAM` | `linear_team` を空欄にしたときに使うチーム名。本リポジトリを clone して使う人は自分のチーム名を置く(ワークフロー本文に固定値は無い) |
 
 ## 1. Actions → **Onboard Repository** を実行(自動)
 
@@ -30,18 +36,24 @@ Git 運用も従来どおりユーザー承認制になる)。
 | 入力 | 決めること |
 |---|---|
 | `target_repo` | `owner/name` |
-| `linear_team` | ワーカーが拾うキューのチーム名。**空欄なら SDD ワークフローのみ導入**(config.json なし・Linear / Routine 不要) |
-| `linear_project` | チーム内のプロジェクトで絞る場合のみ |
-| `needs_local_label` | 「ローカル環境・実機が無いと検証できない」ラベル名。リポジトリに合わせて命名してよい(unity-renderer は `needs-unity`)。`needs-human` は固定 |
-| `checks_fast` | 一次ゲートでローカル実行するコマンド(カンマ区切り。lint / typecheck / test)。空のまま自動マージを有効にしない |
-| `review_bot` | `codex` または `none` |
-| `sync_agents_md` | 対象に独自の `AGENTS.md` があるなら外す(同期対象からも除外される) |
-| `direct_push` | 既定は PR 作成。新規リポジトリで即反映したいときだけ on |
+| `linear_team` | ワーカーが拾うキューのチーム名。空欄なら variable `LINEAR_DEFAULT_TEAM`(どちらも無ければ失敗) |
+| `sdd_only` | on にすると **SDD ワークフローのみ導入**(config.json なし・Linear / Routine 不要。`linear_team` は無視) |
+| `review_bot` | `codex` または `none`。config の `review.bot` を決めるだけで、GitHub 側のレビュー設定(App のインストール・自動レビュー)は変えない |
+| `direct_push` | 既定は PR 作成。新規リポジトリで即反映したいときだけ on。実行ごとの指定で保存されない(次回は既定に戻る) |
+
+フォームに無い項目は規約で決まる。変えたい場合は生成後の `config.json` を編集する:
+
+| 項目 | 規約 |
+|---|---|
+| `linear.project` | リポジトリ名(`owner/name` の `name`)と同名。無ければワークフローが作る |
+| `linear.labels` | `needs-human` / `needs-local`。ラベルを付ける判断はワーカーが行う(着手後に実機が必要と分かった Issue に自分で付けて手放す) |
+| `checks.fast` | 空。空ならワーカーが CI 定義・`package.json` 等から lint / typecheck / test 相当を推定して実行する。固定したいコマンドがあれば入れる |
+| `AGENTS.md` | 配布版の先頭にマーカー行(`managed-by: agentic-dev-harness`)がある。対象にマーカーの無い `AGENTS.md` があれば独自ファイルとみなし、導入時も同期時も上書きしない。独自の追記をしたらマーカー行を消す |
 
 ワークフローが行うこと:
 
-1. **Linear**(`LINEAR_API_KEY` がある場合): チーム名・プロジェクト名の存在を確認し(無ければ候補一覧を出して失敗する。config に誤った名前が入るのを防ぐ)、`needs-human` / `needs_local_label` のラベルを説明文付きで作る(既にあれば何もしない)
-2. **対象リポジトリ**: 配布物(`.claude .codex .kiro .agents [AGENTS.md]`)を上書きコピー、
+1. **Linear**(`LINEAR_API_KEY` がある場合): チーム名の存在を確認し(無ければ候補一覧を出して失敗する。config に誤った名前が入るのを防ぐ)、リポジトリ名と同名のプロジェクトを確認して無ければ作り(同名が別チームにだけある場合は重複を作らず失敗する)、`needs-human` / `needs-local` のラベルを説明文付きで作る(既にあれば何もしない)
+2. **対象リポジトリ**: 配布物(`.claude .codex .kiro .agents AGENTS.md`)を上書きコピー(独自の `AGENTS.md` は除く)、
    `.github/workflows/harness-sync.yml` を配置(unity-sdd-template 生成先は既存の
    `orchestration-sync.yml` を使うので置かない)、ルート `CLAUDE.md` に
    `@.claude/rules/sdd-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
@@ -56,7 +68,8 @@ Git 運用も従来どおりユーザー承認制になる)。
 
 ## 2. 導入 PR をマージする
 
-PR の `config.json` を確認してマージする。`checks.fast` が空なら CI 相当のコマンドを入れる。
+PR の `config.json` を確認してマージする。規約から変えたい項目(プロジェクト名・ラベル名・
+`checks.fast` の固定など)があればここで編集する。
 `auto_merge.enabled` は **false のまま**数回まわし、ゲートの動きを確認してから true にする。
 
 ## 3. GitHub 側を確認する(手動)
@@ -81,8 +94,8 @@ PR の `config.json` を確認してマージする。`checks.fast` が空なら
 ## Linear 側の運用メモ
 
 - ラベルの意味: `needs-human` — 人間の判断が必要。自律ワーカーは着手しない /
-  `needs-local`(名前は任意)— ローカル環境・実機が必要。自律ワーカーはスキップしてユーザーへ通知する。
-  `LINEAR_API_KEY` を置いていない場合はこの 2 つを手で作る
+  `needs-local`(config で別名にしてもよい)— ローカル環境・実機が必要。自律ワーカーはスキップしてユーザーへ通知する。
+  `LINEAR_API_KEY` を置いていない場合はこの 2 つとリポジトリ名のプロジェクトを手で作る
 - Issue の書き方: タイトルは英語、本文は日本語でよい。1 Issue = 1 PR の粒度にする。
   複数 Issue にまたがる設計(1 つの実装単位が複数要件を跨ぐ)は、ワーカーが `needs-human` を
   付けて質問する。spec(`.kiro/specs/`)由来の作業は tasks.md のタスク粒度で Issue を切ると
@@ -103,10 +116,10 @@ PR の `config.json` を確認してマージする。`checks.fast` が空なら
 PAT を用意できない等の理由で Onboard Repository を使えない場合は、同じことを手で行う:
 
 1. `templates/consumer/harness-sync.yml` を対象の `.github/workflows/harness-sync.yml` に置き、
-   Actions から 1 回実行する(独自の `AGENTS.md` があるなら `SYNC_PATHS` から外す)
+   Actions から 1 回実行する(独自の `AGENTS.md` はマーカーが無いので上書きされない)
 2. ルート `CLAUDE.md` に `@.claude/rules/sdd-workflow.md` の行を入れる
 3. `.claude/skills/linear-worker/templates/orchestration-config.json` を
    `.kiro/orchestration/config.json` にコピーして値を埋める(ローカルで
-   `python3 scripts/onboard/render_config.py --repo owner/name --team <チーム> ... --out <path>` でも生成できる)
-4. Linear にラベルを 2 つ作る
+   `python3 scripts/onboard/render_config.py --repo owner/name --team <チーム> --out <path>` でも生成できる)
+4. Linear にリポジトリ名のプロジェクトとラベル 2 つを作る
 5. `registry/repos.yaml` にエントリを追記して PR を出す
