@@ -90,3 +90,24 @@ repos:
       status: pilot
     notes: >-
       2026-09-29 に Onboard Repository ワークフローで導入。
+
+  - name: oscdesk
+    github: Hidano-Dev/oscdesk
+    role: execution
+    sync: workflow   # .github/workflows/harness-sync.yml
+    harness:
+      config: true
+      linear:
+        team: "Hidano"
+        project: "oscdesk"
+        labels:
+          needs_human: "needs-human"
+          needs_local: "needs-local"
+      routine:
+        name: "自律駆動ハーネス (oscdesk)"
+        cron: "52 * * * *"   # UTC
+        id: null   # Routine 作成後に Registry Update ワークフローで記入
+        connectors: [Linear]
+      status: pilot
+    notes: >-
+      2026-09-29 に Onboard Repository ワークフローで導入。
