@@ -33,5 +33,9 @@
     "enabled": false,
     "method": "merge",
     "protected_paths": [".claude/", ".github/", ".kiro/settings/"]
+  },
+  "reporting": {
+    "linear_status": true,
+    "notion": true
   }
 }

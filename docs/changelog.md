@@ -3,6 +3,30 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-09-30 — 駐機 PR のレビュー巡回と状態スナップショット
+
+- `.claude/skills/linear-worker/SKILL.md`(配布物)
+  - §1-A(新設): 新規選定の前に、マージ承認待ちで駐機している PR を巡回する。駐機後に届いた
+    P1 以上の指摘(人間の具体的な修正指示を含む)は再 claim して修正・push・返信し、再び駐機して
+    マージ判断を人間へ返す。P2 以下は一括棄却。修正 push は 1 起動 1 Issue の実作業に数える
+  - §3 駐機手順: claim 解放の追記に `駐機理由: <merge-approval|requirements|no-go|escalation|scope>`
+    を併記する(巡回対象は `merge-approval` のみ)
+  - §5: 終了時に最新状態のスナップショット(人間の対応待ち・進行中・実機待ち・次の候補・この起動の
+    結果)を Linear のプロジェクトのステータス更新として投稿する。Linear プロジェクトの Overview に
+    リンクされた Notion ページは、この起動で古くなった箇所だけを元と同程度以下の文字数で書き換える
+    (記述を足さない。詳細は Linear 側に書く)
+- `templates/orchestration-config.json` — `reporting.linear_status` / `reporting.notion`(既定とも true)を追加
+- `templates/routine-prompt.md` — 上記 2 点をプロンプトに明記。**Routine のプロンプトを貼り直すこと**
+- `.claude/rules/git-workflow.md`(配布物)— §6 に駐機 PR の巡回を追記
+
+**取り込み側で必要な手動追従**
+
+- 各 Routine のプロンプトを新しい `routine-prompt.md` の `---` 以下に差し替える
+- Notion を更新させる場合は、Linear プロジェクトの Overview に Notion ページのリンクを 1 つ置き、
+  Routine の MCP コネクタに Notion を入れる(config の変更は不要。`reporting` キーが無くても既定値で動く)
+- この変更以前に駐機した PR は `駐機理由` を持たない。判断依頼コメントがマージ承認のみなら
+  `merge-approval` とみなして巡回する
+
 ## 2026-09-27 — Onboard Repository の入力を規約化して削減
 
 - `.github/workflows/onboard-repo.yml` — フォーム入力を `target_repo` / `linear_team` / `sdd_only` /

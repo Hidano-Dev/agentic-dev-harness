@@ -106,7 +106,10 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
     out.append(f"| 名前 | `{routine_name}` |")
     out.append(f"| cron(UTC) | `{a.cron}` |")
     out.append(f"| ソース | `https://github.com/{a.repo}`(デフォルトブランチ `{a.default_branch}`) |")
-    out.append("| MCP コネクタ | Linear(必須)。Notion 等は任意 |")
+    out.append(
+        "| MCP コネクタ | Linear(必須)。Notion(Linear プロジェクトの Overview に"
+        "Notion ページをリンクしている場合。古くなった記述の書き換えに使う) |"
+    )
     out.append(f"| 許可ツール | {TOOLS} |")
     out.append("| 通知 | push 通知を有効にすると空振り・駐機の報告が届く |")
     out.append("")
