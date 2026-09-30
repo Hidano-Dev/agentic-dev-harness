@@ -12,7 +12,8 @@ claude.ai/code の Routine(定期実行クラウドセッション)に設定す�
   リポジトリ側の `.kiro/orchestration/config.json` が持つ
 
 推奨設定: cron は 1 時間間隔(Routine の最小間隔)、ソースはリポジトリのデフォルト
-ブランチ、MCP コネクタは Linear(必須)。許可ツールは Bash / Read / Write / Edit /
+ブランチ、MCP コネクタは Linear(必須)と Notion(Linear プロジェクトの Overview に
+Notion ページをリンクしている場合)。許可ツールは Bash / Read / Write / Edit /
 Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-impl`
 `/kiro:spec-impl` を起動するための Skill / SlashCommand / Task(Agent)。
 
@@ -25,6 +26,20 @@ Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-im
 linear.project)から次の候補 Issue を選定し、claim → 実装 → PR → レビューゲート →
 条件を満たせば自動マージ(config の auto_merge.enabled が true の場合のみ)→
 Linear 更新 → 報告まで進めてください。
+
+新規選定の前に、マージ承認待ちで駐機している PR を巡回すること(スキル §1-A)。
+駐機後に届いたレビューで P0・P1 相当の指摘(人間の具体的な修正指示を含む)があれば、
+再 claim して修正・検証・push・スレッド返信まで行い、再び駐機してマージ判断を
+人間へ返す。P2 以下は一括棄却で閉じる。needs-human は外さず、マージもしない
+(auto_merge の条件を満たす場合を除く)。
+
+終了時は結果にかかわらず(空振りでも)、スキル §5 に従って最新状態の
+スナップショット(人間の対応待ち・進行中・実機待ちキュー・次の候補・この起動の
+結果)をテキストでまとめ、Linear のプロジェクトのステータス更新として投稿すること。
+続けて、Linear プロジェクトの Overview にリンクされた Notion ページを読み、この起動の
+結果で古くなった記述があればその箇所だけを元と同程度かそれ以下の文字数で書き換える
+(節や記述を新しく足さない。古くなった箇所が無ければ書かない)。それ以上の詳細は
+Notion ではなく Linear に書くこと。
 
 実作業(コミット・spec 成果物生成・PR)まで進める Issue は 1 起動につき 1 件のみ。
 ただし選定した候補を成果物ゼロのまま手放した場合(claim 競合で敗退、着手前に
