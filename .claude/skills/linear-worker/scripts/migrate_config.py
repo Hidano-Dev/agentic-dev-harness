@@ -38,10 +38,17 @@ def _auto_merge(cfg: dict) -> dict:
 
 
 def enable_auto_merge(cfg: dict) -> str | None:
-    """雛形の既定を true に変えた(2026-10-01)のに合わせ、既存 config も true にする。"""
+    """雛形の既定を true に変えた(2026-10-01)のに合わせ、既存 config も true にする。
+
+    config 自体を変える PR まで自動マージされないよう、protected_paths に
+    .kiro/orchestration/ が入っているときだけ有効にする(protect_orchestration の後に置く)。
+    """
     am = _auto_merge(cfg)
     if am.get("enabled") is True:
         return None
+    paths = am.get("protected_paths")
+    if not isinstance(paths, list) or ".kiro/orchestration/" not in paths:
+        raise NotApplicable("auto_merge.protected_paths に .kiro/orchestration/ が無い")
     am["enabled"] = True
     return "auto_merge.enabled を true に変更"
 
@@ -63,8 +70,8 @@ def protect_orchestration(cfg: dict) -> str | None:
 
 # (ID, 適用関数)。適用順に並べ、ID は変えない。追加したら雛形の applied_migrations にも足す
 MIGRATIONS = [
-    ("2026-10-01-auto-merge-enabled", enable_auto_merge),
     ("2026-10-01-protect-orchestration-config", protect_orchestration),
+    ("2026-10-01-auto-merge-enabled", enable_auto_merge),
 ]
 
 

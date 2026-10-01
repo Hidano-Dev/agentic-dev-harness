@@ -8,9 +8,11 @@
 - `.claude/skills/linear-worker/scripts/migrate_config.py`(配布物・新設)— 既存の
   `.kiro/orchestration/config.json` に配布元の設定変更を移行として 1 度ずつ適用する。対象は `auto_merge` のみ。
   適用済みの ID は config の `applied_migrations` に記録し、その後に人間が値を戻しても再適用しない
-  - `2026-10-01-auto-merge-enabled`: `auto_merge.enabled` を true にする
   - `2026-10-01-protect-orchestration-config`: `auto_merge.protected_paths` に `.kiro/orchestration/` を追加
     (キーが無ければ既定の 3 パスごと書く)
+  - `2026-10-01-auto-merge-enabled`: `auto_merge.enabled` を true にする。`protected_paths` に
+    `.kiro/orchestration/` が入っているときだけ適用する(保護なしで自動マージが始まらないように)
+  - config の形が想定外で適用できない移行は記録せずに警告し、修正後の同期で再試行する
 - `templates/orchestration-config.json` — `applied_migrations` に全移行の ID を入れる(新規生成した config は
   移行済み扱いになり、導入 PR で人間が決めた値を同期が上書きしない)
 - `templates/consumer/harness-sync.yml` — コピー後に上記スクリプトを実行するステップを追加。
