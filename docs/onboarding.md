@@ -86,7 +86,9 @@ PR の `config.json` を確認してマージする。規約から変えたい�
    (`.claude/skills/linear-worker/templates/routine-prompt.md` の `---` 以下)で置換箇所はない
 2. 1 回手動実行し、ログで「config を読んだ → キューを確認した → 空振りまたは着手」の流れを確認する。
    `auto_merge.enabled` を false にしたまま最初の PR がゲートを通過して「マージ承認待ち」で
-   駐機するところまで見てから、true に切り替える
+   駐機するところまで見てから、true に切り替える。なお `auto_merge.merge_parked`(既定 true)により、
+   駐機 PR も次回以降の巡回で条件(P0/P1 未対応なし・CI green・コンフリクトなし・人間の保留なし)を
+   満たせばマージされる。駐機 PR を必ず人間がマージしたい場合は `merge_parked` を false にする
 3. Actions → **Registry Update** を `name=<リポジトリ名>` `routine_id=<Routine の ID>`
    `config=true` で実行する(台帳に直接コミットされる。停止・一時停止したときも
    `status` をここで更新する)

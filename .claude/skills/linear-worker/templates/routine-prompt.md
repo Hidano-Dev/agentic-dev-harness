@@ -24,14 +24,24 @@ Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-im
 リポジトリの .claude/skills/linear-worker/SKILL.md を読み、そのポリシーに厳密に
 従って、.kiro/orchestration/config.json に設定された Linear(config の linear.team /
 linear.project)から次の候補 Issue を選定し、claim → 実装 → PR → レビューゲート →
-条件を満たせば自動マージ(config の auto_merge.enabled が true の場合のみ)→
+条件を満たせば自動マージ(新規 PR の自動マージは config の auto_merge.enabled が
+true の場合のみ。駐機 PR の巡回マージは enabled と独立に auto_merge.merge_parked に
+従う — 下記)→
 Linear 更新 → 報告まで進めてください。
 
 新規選定の前に、マージ承認待ちで駐機している PR を巡回すること(スキル §1-A)。
-駐機後に届いたレビューで P0・P1 相当の指摘(人間の具体的な修正指示を含む)があれば、
-再 claim して修正・検証・push・スレッド返信まで行い、再び駐機してマージ判断を
-人間へ返す。P2 以下は一括棄却で閉じる。needs-human は外さず、マージもしない
-(auto_merge の条件を満たす場合を除く)。
+駐機後に届いたレビューで P0・P1 相当の指摘(人間の具体的な修正指示を含む)がある、
+現在ヘッドの CI が PR 起因で落ちている、またはデフォルトブランチとのマージ
+コンフリクトが出ている場合は、再 claim して修正(コンフリクトはデフォルトブランチを
+マージして解消。rebase・force-push はしない)・検証・push・返信まで行い、再び駐機して
+マージ判断を人間へ返す。CI の一過性失敗は失敗ジョブの再実行 1 回で済ませる。
+方針判断が要るコンフリクトや原因不明の CI 失敗は直さずエスカレーションとして人間へ
+返す。P2 以下は一括棄却で閉じる。needs-human は外さない。
+要修正が無く、P0・P1 の未対応指摘なし・未解決スレッドなし・現在ヘッドの CI green・
+コンフリクトなし・人間の保留なしを満たす駐機 PR は、config の
+auto_merge.merge_parked が false でなく auto_merge.protected_paths を変更して
+いなければマージしてブランチを削除する(スキル §1-A 巡回マージ。この起動で修正
+push した PR は次回以降に回す)。それ以外はマージせず駐機を続ける。
 
 終了時は結果にかかわらず(空振りでも)、スキル §5 に従って最新状態の
 スナップショット(人間の対応待ち・進行中・実機待ちキュー・次の候補・この起動の
