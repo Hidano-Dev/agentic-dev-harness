@@ -30,13 +30,17 @@
     "backlog_doc": "docs/backlog.md"
   },
   "auto_merge": {
-    "enabled": false,
+    "enabled": true,
     "method": "merge",
-    "protected_paths": [".claude/", ".github/", ".kiro/settings/"],
+    "protected_paths": [".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/"],
     "merge_parked": true
   },
   "reporting": {
     "linear_status": true,
     "notion": true
-  }
+  },
+  "applied_migrations": [
+    "2026-10-01-auto-merge-enabled",
+    "2026-10-01-protect-orchestration-config"
+  ]
 }

@@ -57,7 +57,7 @@ Git 運用も従来どおりユーザー承認制になる)。
    `.github/workflows/harness-sync.yml` を配置(unity-sdd-template 生成先は既存の
    `orchestration-sync.yml` を使うので置かない)、ルート `CLAUDE.md` に
    `@.claude/rules/sdd-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
-   生成(`auto_merge.enabled` は false)→ `chore: onboard agentic-dev-harness` として PR を作成
+   生成(`auto_merge.enabled` は true)→ `chore: onboard agentic-dev-harness` として PR を作成
 3. **台帳**: `registry/repos.yaml` にエントリを追加して本リポジトリにコミット
    (Routine の ID は後で手順 4 で埋める)
 4. **ジョブサマリ**に「残りの手作業」と **Routine 設定シート**(名前・cron・ソース・
@@ -70,7 +70,8 @@ Git 運用も従来どおりユーザー承認制になる)。
 
 PR の `config.json` を確認してマージする。規約から変えたい項目(プロジェクト名・ラベル名・
 `checks.fast` の固定など)があればここで編集する。
-`auto_merge.enabled` は **false のまま**数回まわし、ゲートの動きを確認してから true にする。
+`auto_merge.enabled` は雛形どおり **true** で生成される。ゲートを通過した PR は自動でマージされるため、
+先にゲートの動きを見たい場合はここで false にして数回まわし、確認してから true に戻す。
 
 ## 3. GitHub 側を確認する(手動)
 
@@ -85,8 +86,8 @@ PR の `config.json` を確認してマージする。規約から変えたい�
    **Routine 設定シート**の値をそのまま使って作成する。プロンプトは全リポジトリ同文
    (`.claude/skills/linear-worker/templates/routine-prompt.md` の `---` 以下)で置換箇所はない
 2. 1 回手動実行し、ログで「config を読んだ → キューを確認した → 空振りまたは着手」の流れを確認する。
-   `auto_merge.enabled` を false にしたまま最初の PR がゲートを通過して「マージ承認待ち」で
-   駐機するところまで見てから、true に切り替える。なお `auto_merge.merge_parked`(既定 true)により、
+   `auto_merge.enabled` が true なら、最初の PR がゲートを通過して自動マージされるところまで見る
+   (手順 2 で false にした場合は「マージ承認待ち」で駐機するところまで見てから true に切り替える)。なお `auto_merge.merge_parked`(既定 true)により、
    駐機 PR も次回以降の巡回で条件(P0/P1 未対応なし・CI green・コンフリクトなし・人間の保留なし)を
    満たせばマージされる。駐機 PR を必ず人間がマージしたい場合は `merge_parked` を false にする
 3. Actions → **Registry Update** を `name=<リポジトリ名>` `routine_id=<Routine の ID>`
@@ -111,7 +112,7 @@ PR の `config.json` を確認してマージする。規約から変えたい�
   別 Routine でよいが、同一リポジトリに 2 本立てない)
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。
   ラベルは再開したワーカーが外すので手で外さなくてよい(外すと通常の選定対象に戻る)
-- `.claude/` `.github/` `.kiro/settings/` を変える PR は自動マージされない。人間がマージする
+- `.claude/` `.github/` `.kiro/settings/` `.kiro/orchestration/` を変える PR は自動マージされない。人間がマージする
 
 ## 手動で行う場合(ワークフローが使えないとき)
 

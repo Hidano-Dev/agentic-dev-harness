@@ -54,7 +54,9 @@ docs/                   … 導入手順・運用メモ(配布されない)
 - ルート `CLAUDE.md` はコピーしない。取り込み側は自分の `CLAUDE.md` に
   `@.claude/rules/sdd-workflow.md` の 1 行を書けば SDD メモと Git 運用ルールが読み込まれる
 - 上書きマージなので、取り込み側が独自に追加したファイル(自作 skill、`.claude/settings.json`、
-  `.kiro/specs/`、`.kiro/steering/`、`.kiro/orchestration/`)は残る。本リポジトリ側で**削除**した
+  `.kiro/specs/`、`.kiro/steering/`、`.kiro/orchestration/`)は残る。ただし `.kiro/orchestration/config.json` の
+  `auto_merge` には、配布元が定義した移行(`.claude/skills/linear-worker/scripts/migrate_config.py`)を
+  同期のたびに未適用分だけ適用する本リポジトリ側で**削除**した
   ファイルは自動では消えないので、削除は `docs/` の変更履歴に明記して手動で追従する
 - `AGENTS.md` は配布版の先頭にマーカー行(`managed-by: agentic-dev-harness`)がある。取り込み側の
   `AGENTS.md` にマーカーが無ければ独自ファイルとみなし、導入時も同期時も上書きしない(独自の追記を

@@ -91,7 +91,7 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
         step += 1
     out.append(f"{step}. GitHub 側: PR で CI が走ることを確認する。外部レビューボット(例: Codex)を使うなら GitHub App をインストールし、PR で動くことを 1 回確認する")
     step += 1
-    out.append(f"{step}. 下の設定シートで Routine を作成し、1 回手動実行してログを確認する(`auto_merge.enabled` は最初は false のまま)")
+    out.append(f"{step}. 下の設定シートで Routine を作成し、1 回手動実行してログを確認する(`auto_merge.enabled` は true。ゲートを通過した PR は自動マージされる)")
     step += 1
     entry_name = a.entry_name or repo_name
     out.append(

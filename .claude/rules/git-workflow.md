@@ -125,7 +125,8 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
     返信で閉じる。P2 以下の指摘は linear-worker/SKILL.md §4 の重大度ベース処理に
     よる一括棄却コメント + resolve で閉じてよい）
 - **例外（従来どおりユーザー承認必須）**: config の `auto_merge.protected_paths`（既定
-  `.claude/` / `.github/` / `.kiro/settings/`）等のポリシー・権限・CI 定義を変更する PR、
+  `.claude/` / `.github/` / `.kiro/settings/` / `.kiro/orchestration/`）等のポリシー・権限・CI 定義・
+  orchestration 設定を変更する PR、
   spec の NO-GO ゲートに関わる判断、Issue のスコープを逸脱する変更。
   linear-worker はこれらの承認待ちに入った時点で claim を解放して駐機する
   （`.claude/skills/linear-worker/SKILL.md` §3 の駐機手順。判断待ち PR が
