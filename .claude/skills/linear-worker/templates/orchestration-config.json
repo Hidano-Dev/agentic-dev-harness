@@ -32,7 +32,7 @@
   "auto_merge": {
     "enabled": true,
     "method": "merge",
-    "protected_paths": [".claude/", ".github/", ".kiro/settings/"],
+    "protected_paths": [".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/"],
     "merge_parked": true
   },
   "reporting": {

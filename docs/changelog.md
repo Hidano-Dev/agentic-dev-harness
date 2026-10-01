@@ -3,6 +3,17 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-01 — `protected_paths` の既定に `.kiro/orchestration/` を追加
+
+- `templates/orchestration-config.json` — `auto_merge.protected_paths` の既定に `.kiro/orchestration/` を追加。
+  `auto_merge` 等を書き換える PR(config 自体の変更)がパス判定で自動マージ・巡回マージされないようにする
+- `.claude/skills/linear-worker/SKILL.md` / `.claude/rules/git-workflow.md`(配布物)、`docs/onboarding.md` — 既定値の記述を更新
+
+**取り込み側で必要な手動追従**
+
+- 既存の `.kiro/orchestration/config.json` は同期で上書きされないため、各リポジトリの
+  `auto_merge.protected_paths` に `".kiro/orchestration/"` を手で追加する
+
 ## 2026-10-01 — 雛形の `auto_merge.enabled` を true に変更
 
 - `templates/orchestration-config.json` — `auto_merge.enabled` の既定を false → true に変更
