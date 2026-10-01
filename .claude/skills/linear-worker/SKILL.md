@@ -37,7 +37,7 @@ SDD フローに従う。本書はその上に載る「選定・承認・マー�
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
 | `worker.claim_stale_hours` | 放棄 claim とみなす経過時間 | 24 |
 | `worker.backlog_doc` | マージ後に届いた軽微な指摘の記録先 | `docs/backlog.md` |
-| `auto_merge.enabled` | 自動マージを許可するか | false |
+| `auto_merge.enabled` | 自動マージを許可するか | true(雛形の値。キーが無い場合は false として扱う) |
 | `auto_merge.method` | `merge` / `squash` / `rebase` | `merge` |
 | `auto_merge.protected_paths` | 変更していたら自動マージしないパス接頭辞 | `[".claude/", ".github/", ".kiro/settings/"]` |
 | `auto_merge.merge_parked` | マージ承認待ちで駐機した PR を、巡回で条件を満たせばマージ + ブランチ削除するか(§1-A 巡回マージ。`enabled` とは独立) | true |

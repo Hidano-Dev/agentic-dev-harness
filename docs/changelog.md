@@ -3,6 +3,19 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-01 — 雛形の `auto_merge.enabled` を true に変更
+
+- `templates/orchestration-config.json` — `auto_merge.enabled` の既定を false → true に変更
+  (キーが無い config は従来どおり false として扱う)
+- `.claude/skills/linear-worker/SKILL.md`(配布物)— 設定表の既定値を更新
+- `docs/onboarding.md` / `.github/workflows/onboard-repo.yml` / `scripts/onboard/routine_sheet.py` —
+  「最初は false のまま」の案内を、true で生成されることと、先にゲートを観察したい場合は false にする手順へ変更
+
+**取り込み側で必要な手動追従**
+
+- なし。既存の `.kiro/orchestration/config.json` は同期で上書きされないため値は変わらない。
+  自動マージを有効にしたいリポジトリは `auto_merge.enabled` を true にする
+
 ## 2026-10-01 — 駐機 PR の巡回で CI 失敗・マージコンフリクトも修正し、条件を満たせばマージする
 
 - `.claude/skills/linear-worker/SKILL.md`(配布物)

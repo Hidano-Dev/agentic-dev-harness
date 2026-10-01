@@ -321,7 +321,7 @@ jobs:
               echo "## マージ前に確認すること"
               echo
               echo "- \`config.json\` の値(linear.team / project = リポジトリ名 / labels / review.bot)。変えたい項目はここで編集する"
-              echo "- \`auto_merge.enabled\` は false のまま。ゲートの動きを数回確認してから true にする"
+              echo "- \`auto_merge.enabled\` は true(ゲートを通過した PR は自動マージされる)。先にゲートの動きを確認したい場合は false にして数回まわしてから true に戻す"
               echo "- \`checks.fast\` は空でもワーカーが CI 定義等から推定して実行する。固定したいコマンドがあれば入れる"
             fi
             echo

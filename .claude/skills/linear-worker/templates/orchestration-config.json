@@ -30,7 +30,7 @@
     "backlog_doc": "docs/backlog.md"
   },
   "auto_merge": {
-    "enabled": false,
+    "enabled": true,
     "method": "merge",
     "protected_paths": [".claude/", ".github/", ".kiro/settings/"],
     "merge_parked": true
