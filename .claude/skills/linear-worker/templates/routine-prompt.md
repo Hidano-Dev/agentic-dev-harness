@@ -24,7 +24,9 @@ Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-im
 リポジトリの .claude/skills/linear-worker/SKILL.md を読み、そのポリシーに厳密に
 従って、.kiro/orchestration/config.json に設定された Linear(config の linear.team /
 linear.project)から次の候補 Issue を選定し、claim → 実装 → PR → レビューゲート →
-条件を満たせば自動マージ(config の auto_merge.enabled が true の場合のみ)→
+条件を満たせば自動マージ(新規 PR の自動マージは config の auto_merge.enabled が
+true の場合のみ。駐機 PR の巡回マージは enabled と独立に auto_merge.merge_parked に
+従う — 下記)→
 Linear 更新 → 報告まで進めてください。
 
 新規選定の前に、マージ承認待ちで駐機している PR を巡回すること(スキル §1-A)。
