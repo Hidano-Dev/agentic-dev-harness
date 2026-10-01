@@ -31,6 +31,10 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
     `chore/hid-19-linear-branch-naming`。
     対応する Linear Issue がない作業は、ブランチを切る前に Linear へ Issue を起票する
     （PR にしない使い捨ての検証作業は除く）。Issue 作成は Linear MCP から行える。
+    **例外**: Routine 等のクラウドセッションで実行環境が作業ブランチ（`claude/...` 等）を
+    割り当てている場合は、割り当てブランチをそのまま使い、PR タイトルの Issue ID・本文の
+    `Fixes <ISSUE-ID>`・Linear MCP での PR 添付で紐付けを補う
+    （`.claude/skills/linear-worker/SKILL.md` §2 手順 4〜5）。
   - **Linear 連携なし**: `<type>/<topic>`（例: `feature/spec-run-retry`）
 - Linear 連携ありの場合、Issue タイトルと PR タイトルは英語で書く（本文・説明は日本語でよい）。
 - Linear 連携ありの場合、ブランチを切ったら Linear MCP で対応 Issue のステータスを
