@@ -38,5 +38,9 @@
   "reporting": {
     "linear_status": true,
     "notion": true
-  }
+  },
+  "applied_migrations": [
+    "2026-10-01-auto-merge-enabled",
+    "2026-10-01-protect-orchestration-config"
+  ]
 }

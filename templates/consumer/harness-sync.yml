@@ -11,6 +11,12 @@
 #   ファイル(.claude/settings.json、.kiro/specs、.kiro/steering、
 #   .kiro/orchestration/config.json 等)は残る。harness 側で削除された
 #   ファイルは自動では消えないため、必要なら手動で削除する
+# - .kiro/orchestration/config.json はコピーしないが、配布元が定義した移行
+#   (.claude/skills/linear-worker/scripts/migrate_config.py。対象は auto_merge のみ)を
+#   1 度ずつ適用する。適用済みの移行は config の applied_migrations に記録され、
+#   その後に人間が値を戻しても再適用しない
+# - このワークフロー自体(.github/workflows/)は GITHUB_TOKEN では更新できないため同期しない。
+#   配布版と異なる場合は警告するので、templates/consumer/harness-sync.yml で差し替える
 # - AGENTS.md は配布版の先頭にマーカー(AGENTS_MD_MARKER)が入っている。取り込み側の
 #   AGENTS.md にマーカーが無ければ独自ファイルとみなして上書きしない(プロジェクト固有の
 #   追記をしたらマーカー行を消す。SYNC_PATHS を編集する必要はない)
@@ -78,6 +84,10 @@ jobs:
             fi
             cp -rf "/tmp/harness/$p" ./
           done
+          wf=.github/workflows/harness-sync.yml
+          if [ -f "$wf" ] && ! cmp -s /tmp/harness/templates/consumer/harness-sync.yml "$wf"; then
+            echo "::warning::$wf が配布版(${HARNESS_REPO} の templates/consumer/harness-sync.yml)と異なります。独自の変更が無ければ配布版に差し替えてください"
+          fi
           rm -rf /tmp/harness
 
       # config.json は同期対象外だが、雛形のプレースホルダが残ったまま・JSON として壊れたまま
@@ -96,6 +106,15 @@ jobs:
             if grep -qE '"<[^"]*>"' "$f"; then
               echo "::warning::$f に雛形のプレースホルダ(<...>)が残っています"
             fi
+          fi
+
+      # 雛形の既定値を変えても既存の config.json には届かないので、配布元が定義した
+      # auto_merge の移行を未適用のものだけ適用する(適用内容は notice に出す)
+      - name: Apply orchestration config migrations
+        run: |
+          m=.claude/skills/linear-worker/scripts/migrate_config.py
+          if [ -f .kiro/orchestration/config.json ] && [ -f "$m" ]; then
+            python3 "$m" .kiro/orchestration/config.json
           fi
 
       - name: Commit if changed

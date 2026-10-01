@@ -3,6 +3,31 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-01 — Harness Sync が config の auto_merge 移行を適用する
+
+- `.claude/skills/linear-worker/scripts/migrate_config.py`(配布物・新設)— 既存の
+  `.kiro/orchestration/config.json` に配布元の設定変更を移行として 1 度ずつ適用する。対象は `auto_merge` のみ。
+  適用済みの ID は config の `applied_migrations` に記録し、その後に人間が値を戻しても再適用しない
+  - `2026-10-01-auto-merge-enabled`: `auto_merge.enabled` を true にする
+  - `2026-10-01-protect-orchestration-config`: `auto_merge.protected_paths` に `.kiro/orchestration/` を追加
+    (キーが無ければ既定の 3 パスごと書く)
+- `templates/orchestration-config.json` — `applied_migrations` に全移行の ID を入れる(新規生成した config は
+  移行済み扱いになり、導入 PR で人間が決めた値を同期が上書きしない)
+- `templates/consumer/harness-sync.yml` — コピー後に上記スクリプトを実行するステップを追加。
+  取り込み側の `harness-sync.yml` が配布版と異なる場合に警告を出す(ワークフロー自体は `GITHUB_TOKEN` では
+  更新できないため同期されない)
+- `.claude/skills/linear-worker/SKILL.md`(配布物)— 設定表に `applied_migrations` を追加
+
+**取り込み側で必要な手動追従**
+
+- `.github/workflows/harness-sync.yml` を新しい `templates/consumer/harness-sync.yml` に差し替えてから
+  Harness Sync を実行する。実行時に移行が適用され、変更は `chore: sync harness assets` として
+  デフォルトブランチへ直接コミットされる(適用内容は Actions の notice に出る)。
+  **`auto_merge.enabled` を意図して false にしていたリポジトリも 1 度 true になる**ので、
+  false のままにしたい場合は同期後に false へ戻す(以降の同期では上書きされない)
+- unity-sdd-template 生成先(`orchestration-sync.yml` で追従)はこのステップを持たないため、
+  `config.json` を手で更新する(上記 2 項目)
+
 ## 2026-10-01 — `protected_paths` の既定に `.kiro/orchestration/` を追加
 
 - `templates/orchestration-config.json` — `auto_merge.protected_paths` の既定に `.kiro/orchestration/` を追加。
@@ -11,8 +36,7 @@
 
 **取り込み側で必要な手動追従**
 
-- 既存の `.kiro/orchestration/config.json` は同期で上書きされないため、各リポジトリの
-  `auto_merge.protected_paths` に `".kiro/orchestration/"` を手で追加する
+- 上記「Harness Sync が config の auto_merge 移行を適用する」を参照(既存 config へは移行として届く)
 
 ## 2026-10-01 — 雛形の `auto_merge.enabled` を true に変更
 
@@ -24,8 +48,7 @@
 
 **取り込み側で必要な手動追従**
 
-- なし。既存の `.kiro/orchestration/config.json` は同期で上書きされないため値は変わらない。
-  自動マージを有効にしたいリポジトリは `auto_merge.enabled` を true にする
+- 上記「Harness Sync が config の auto_merge 移行を適用する」を参照(既存 config へは移行として届く)
 
 ## 2026-10-01 — 駐機 PR の巡回で CI 失敗・マージコンフリクトも修正し、条件を満たせばマージする
 

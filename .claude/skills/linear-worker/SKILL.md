@@ -43,6 +43,7 @@ SDD フローに従う。本書はその上に載る「選定・承認・マー�
 | `auto_merge.merge_parked` | マージ承認待ちで駐機した PR を、巡回で条件を満たせばマージ + ブランチ削除するか(§1-A 巡回マージ。`enabled` とは独立) | true |
 | `reporting.linear_status` | 終了時に Linear プロジェクトへステータス更新を投稿するか(§5) | true |
 | `reporting.notion` | 終了時に Linear プロジェクトの Overview にリンクされた Notion ページの古くなった記述を直すか(§5) | true |
+| `applied_migrations` | Harness Sync が適用済みの config 移行の ID(`scripts/migrate_config.py`)。ワーカーは読まない。手で編集しない | 全移行の ID |
 
 以下の本文では、`needs-human` / `needs-local` はそれぞれ `linear.labels.*` に設定した
 実際のラベル名を指す(例: unity-renderer では `needs_local` = `needs-unity`)。
