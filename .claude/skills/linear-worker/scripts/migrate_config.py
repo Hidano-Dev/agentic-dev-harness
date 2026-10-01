@@ -40,15 +40,19 @@ def _auto_merge(cfg: dict) -> dict:
 def enable_auto_merge(cfg: dict) -> str | None:
     """雛形の既定を true に変えた(2026-10-01)のに合わせ、既存 config も true にする。
 
-    config 自体を変える PR まで自動マージされないよう、protected_paths に
-    .kiro/orchestration/ が入っているときだけ有効にする(protect_orchestration の後に置く)。
+    ポリシー・権限・CI 定義・config 自体を変える PR まで自動マージされないよう、
+    protected_paths に既定の保護パスがすべて入っているときだけ有効にする
+    (protect_orchestration の後に置く)。独自に保護を外した config は有効化を見送る。
     """
     am = _auto_merge(cfg)
     if am.get("enabled") is True:
         return None
     paths = am.get("protected_paths")
-    if not isinstance(paths, list) or ".kiro/orchestration/" not in paths:
-        raise NotApplicable("auto_merge.protected_paths に .kiro/orchestration/ が無い")
+    if not isinstance(paths, list):
+        raise NotApplicable("auto_merge.protected_paths が配列ではない")
+    missing = [p for p in DEFAULT_PROTECTED_PATHS + [".kiro/orchestration/"] if p not in paths]
+    if missing:
+        raise NotApplicable(f"auto_merge.protected_paths に既定の保護パス {', '.join(missing)} が無い")
     am["enabled"] = True
     return "auto_merge.enabled を true に変更"
 
