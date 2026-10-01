@@ -103,7 +103,10 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   linear-worker が駐機させたマージ承認待ち PR に後から届いたレビューの P1 以上の指摘・
   CI 失敗・マージコンフリクトは、後続の定期実行が拾って修正・push し、再び承認待ちに戻す
   （コンフリクトはデフォルトブランチのマージで解消し rebase しない。`.claude/skills/
-  linear-worker/SKILL.md` §1-A。マージ判断は引き続きユーザー）。
+  linear-worker/SKILL.md` §1-A）。config の `auto_merge.merge_parked` が false でなければ、
+  要修正が無く P0/P1 未対応なし・CI green・コンフリクトなし・人間の保留なしを満たした
+  駐機 PR は巡回がマージしてブランチを削除する（2026-10-01 決定。`protected_paths` に
+  該当する PR は対象外で、引き続きユーザーがマージ判断する）。
 - **自動マージ条件（`auto_merge.enabled` が true のリポジトリのみ。2026-09-23 決定。詳細な
   手順は `.claude/skills/linear-worker/SKILL.md` §4）**: 次の両ゲートを満たす PR は
   ユーザー承認なしで自動マージしてよい（`auto_merge.method`、`expectedHeadSha` 指定）。

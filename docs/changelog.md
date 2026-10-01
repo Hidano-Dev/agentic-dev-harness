@@ -3,7 +3,7 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
-## 2026-10-01 — 駐機 PR の巡回で CI 失敗・マージコンフリクトも修正する
+## 2026-10-01 — 駐機 PR の巡回で CI 失敗・マージコンフリクトも修正し、条件を満たせばマージする
 
 - `.claude/skills/linear-worker/SKILL.md`(配布物)
   - §1-A: 巡回の判定に「マージ可否(`mergeable` / `mergeStateStatus`)」と「現在ヘッドの CI」を追加。
@@ -16,13 +16,22 @@
   - 安全弁の回数を `P1 修正連続` から `巡回修正連続` に改名し、CI・コンフリクトの修正 push も通算
     (旧形式の記録は同じ値として読む)
   - §5 スナップショットに駐機 PR の CI 状態・コンフリクト有無を併記。§6 に push 済みブランチの rebase 禁止を明記
+  - §1-A 巡回マージ(新設): 要修正が無く、P0/P1 未対応なし・未解決スレッドなし・現在ヘッドの CI green・
+    コンフリクトなし・外部レビュー Completed(または待機期限超過)・人間の保留なしを満たす `merge-approval`
+    駐機 PR は、人間の承認を待たずにマージしてブランチを削除する。`protected_paths` 該当 PR と、
+    同じ起動で修正 push した PR は対象外
+  - §4: 自動マージ後にヘッドブランチを削除する(`--delete-branch`)
+- `templates/orchestration-config.json` — `auto_merge.merge_parked`(既定 true。キーが無い場合も true)を追加
 - `templates/routine-prompt.md` — 上記をプロンプトに明記。**Routine のプロンプトを貼り直すこと**
-- `.claude/rules/git-workflow.md`(配布物)— §6 の駐機 PR 巡回の記述に CI 失敗・コンフリクトを追記
+- `.claude/rules/git-workflow.md`(配布物)— §6 の駐機 PR 巡回の記述に CI 失敗・コンフリクト・巡回マージを追記
+- `docs/onboarding.md` — 初回観察中も駐機 PR が巡回マージされ得ることを追記
 
 **取り込み側で必要な手動追従**
 
 - 各 Routine のプロンプトを新しい `routine-prompt.md` の `---` 以下に差し替える
-- Routine の許可ツールの Bash で `gh run view` / `gh run rerun` / `gh pr checks` が使えること(config の変更は不要)
+- Routine の許可ツールの Bash で `gh run view` / `gh run rerun` / `gh pr checks` / `gh pr merge` が使えること
+- **既存の駐機 PR も巡回マージの対象になる**(config にキーが無ければ true 扱い)。駐機 PR を必ず人間が
+  マージしたいリポジトリは `.kiro/orchestration/config.json` の `auto_merge.merge_parked` を false にする
 
 ## 2026-09-30 — 駐機 PR のレビュー巡回と状態スナップショット
 
