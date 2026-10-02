@@ -34,10 +34,12 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `linear.team` | 選定対象のチーム名 | 必須 |
 | `linear.project` | 選定対象を絞るプロジェクト名(null なら絞らない) | null |
 | `linear.labels.needs_human` | 人間判断待ち。付いた Issue には着手しない | `needs-human` |
-| `linear.labels.needs_local` | ローカル環境・実機が必要。スキップして実機待ちキューへ | `needs-local` |
+| `linear.labels.needs_local` | ローカル環境・実機・人の目が必要。スキップして実機待ちキューへ | `needs-local` |
+| `linear.labels.needs_unity` | Unity Editor でのテスト実行が必要。`checks.unity_ci` があるリポジトリでは候補に含め、CI の Unity ジョブを検証証跡にする(§3 / §4 手順 1)。無いリポジトリでは `needs_local` と同じ扱い | `needs-unity` |
 | `github.repo` | `owner/name` | 必須 |
 | `github.default_branch` | 作業の起点ブランチ | `main` |
 | `checks.fast` | 一次ゲートでローカル実行するコマンド配列。空ならワーカーがリポジトリから推定する(§4 手順 1) | `[]` |
+| `checks.unity_ci` | Unity テストをセルフホストランナーで回す CI の情報(`workflow` = ワークフローファイル名、`platform` = ランナーの OS)。null なら「Unity を CI で検証できないリポジトリ」(`docs/onprem-unity-runner.md`) | null |
 | `review.bot` | 外部レビューボット(`name` / `summary_marker` / `retrigger_comment`)。null なら外部レビューなし | null |
 | `review.wait_minutes` | 外部レビューの待機期限(分) | 60 |
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
@@ -51,8 +53,10 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `reporting.notion` | 終了時に Linear プロジェクトの Overview にリンクされた Notion ページの古くなった記述を直すか(§5) | true |
 | `applied_migrations` | Harness Sync が適用済みの config 移行の ID(`scripts/migrate_config.py`)。ワーカーは読まない。手で編集しない | 全移行の ID |
 
-以下の本文では、`needs-human` / `needs-local` はそれぞれ `linear.labels.*` に設定した
-実際のラベル名を指す(例: unity-renderer では `needs_local` = `needs-unity`)。
+以下の本文では、`needs-human` / `needs-local` / `needs-unity` はそれぞれ `linear.labels.*` に
+設定した実際のラベル名を指す(例: unity-renderer では `needs_local` = `needs-unity`。この場合
+`needs_unity` と同名になるが、`checks.unity_ci` が null なので両方とも実機待ちとして扱われ、
+挙動は変わらない)。
 
 ## 0. 起動時の前提確認
 
@@ -263,6 +267,12 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
   状態が Todo または Backlog
 - **ブロックされていない**(blocked-by リレーションの相手が未完了の Issue は除外)
 - ラベル `needs-local` が**付いていない**(実機・ローカル環境必要 → スキップ対象)
+- ラベル `needs-unity` が付いている場合は、config の `checks.unity_ci` が **null でない**
+  (Unity テストを CI で回せるリポジトリ)。null なら `needs-local` と同じくスキップ対象。
+  `needs-unity` の Issue は、Unity を自分で起動せずに実装し、push 後の CI で検証する
+  (§3)。本文に「Windows でのみ再現」「Play 中に人が操作して確認」等、CI の
+  プラットフォーム(`checks.unity_ci.platform`)や自動実行で検証できない記述があれば、
+  着手せず `needs-local` に付け替えて理由をコメントし、次の候補へ進む
 - ラベル `needs-human` が**付いていない**(人間判断待ち → 着手禁止)
 - 他のワーカーが処理中でない(In Progress かつ直近のコメントで別セッションが claim している Issue は除外)
 - **放棄 claim の回収**: In Progress の Issue でも、「claim コメントの投稿から
@@ -293,8 +303,9 @@ Issue が 1 件」の意味であり、空振りはカウントしない。requi
 初回の空ブランチ push(デフォルトブランチと同一内容)は成果物に**数えない**。空振りで
 手放す際は、その空リモートブランチを削除してよい。
 
-**候補ゼロ(または全候補が空振り)の場合**: `needs-local` でスキップした Issue が
-あればその一覧を「実機待ちキュー」としてユーザーへ報告して終了する。それも無ければ
+**候補ゼロ(または全候補が空振り)の場合**: `needs-local`(および `checks.unity_ci` が
+null のリポジトリの `needs-unity`)でスキップした Issue があればその一覧を
+「実機待ちキュー」としてユーザーへ報告して終了する。それも無ければ
 「キューは空」と報告して終了する。空振りでもエラーではない。
 
 ## 2. claim(着手宣言)
@@ -338,6 +349,16 @@ Issue が 1 件」の意味であり、空振りはカウントしない。requi
 - **spec 由来のタスク**(`.kiro/specs/<feature>/tasks.md` にある作業): 該当タスクを
   `/kiro:spec-impl` のフローで実装する。タスクの完了チェックと検証証跡の更新を忘れない。
 - **単発の chore / fix / docs**: 通常どおり実装する。
+- **`needs-unity` の Issue**(`checks.unity_ci` があるリポジトリ): 実行環境に Unity は無いので、
+  コードを直して push し、PR の CI(`checks.unity_ci.workflow`)の Unity ジョブで検証する。
+  赤になったら `gh run view <run> --log-failed` と artifact の結果 XML / Unity ログ
+  (`test-results/*.xml` `*.log`)を読んで直し、再 push する(push → CI 待ち → 修正の
+  往復は 1 回が数十分かかるので、1 回の push にまとめて直す)。「失敗するテストを直す」
+  Issue では、まず Issue 記載の失敗が CI でも再現することを確認してから直す
+  (CI で再現しないなら Windows 固有の可能性が高い → `needs-local` に付け替えて手放す)。
+  ランナーは 1 台でジョブは直列に走るため、CI の完了は `review.wait_minutes` とは別に
+  最大 90 分待ってよい(それでも queued のままなら、ランナーの停止として `needs-human` を
+  付けて報告する)。
 - 途中で `needs-local` 相当(ローカル環境・実機がないと検証できない)と判明した場合:
   Issue に `needs-local` ラベルを付け、状態を Todo に戻し、理由をコメントして手放す。
   まだ成果物(§1 の定義。初回の空ブランチ push は含まない)が無ければ §1 の
@@ -422,6 +443,9 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
    lint / typecheck / test に相当するコマンドを推定して実行し、**実行したコマンドを
    PR コメントまたは §5 の報告に記録する**(config には書き戻さない。固定したい場合は
    人間が `checks.fast` に入れる)。推定できるものが無ければ「該当なし」と記録する。
+   Unity のテスト(`-runTests`)は実行環境に Unity が無いので推定対象から外し、
+   `checks.unity_ci` があるリポジトリでは手順 4 の CI(Unity ジョブ)の結果と run の URL を
+   「Unity テストの検証証跡」として記録する。`needs-unity` の Issue はこの記録が必須。
 2. `/code-review`(effort: high)を自分で実行し、CONFIRMED / PLAUSIBLE の全 finding を
    修正または理由付きで棄却として記録する。
 3. spec 由来の実装なら `/kiro:validate-impl` を実行し、指摘ゼロまたは対応済みであること。
@@ -542,7 +566,8 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
   行った PR はその旨も。駐機 PR の CI 状態(green / 失敗中 / 既存の失敗でスコープ外)と
   コンフリクト有無も併記する
 - 進行中: 有効な claim がある In Progress Issue
-- 実機待ちキュー: `needs-local` の Issue
+- 実機待ちキュー: `needs-local` の Issue(`checks.unity_ci` が null のリポジトリでは
+  `needs-unity` の Issue も)
 - 次の候補: §1 の選定条件で上位 3 件
 - ヘルス: 人間待ちが無ければ `onTrack`、人間待ちがあれば `atRisk`、エラーで作業を
   中断したなら `offTrack`

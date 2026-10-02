@@ -38,6 +38,7 @@ CLAUDE.md               … 本リポジトリ用。取り込み側は自分の 
 registry/repos.yaml     … 実行リポジトリの台帳(配布されない)
 templates/consumer/     … 取り込み側リポジトリに置く同期ワークフロー(配布されない)
 scripts/onboard/        … 導入ワークフローが使うスクリプト(配布されない)
+scripts/unity-runner/   … オンプレ Unity CI ランナー(Ubuntu)の構築・登録スクリプト(配布されない。docs/onprem-unity-runner.md)
 docs/                   … 導入手順・運用メモ(配布されない)
 .github/workflows/
 ├─ onboard-repo.yml     … Onboard Repository: 新しいリポジトリへの導入をフォーム入力 1 回で行う
