@@ -23,7 +23,7 @@ repos:
   - name: unity-renderer
     github: Hidano-Dev/unity-renderer
     role: execution
-    sync: workflow   # .github/workflows/harness-sync.yml(SYNC_PATHS から AGENTS.md を除外)
+    sync: workflow   # .github/workflows/harness-sync.yml
     harness:
       config: true
       linear:
@@ -41,7 +41,9 @@ repos:
     notes: >-
       ハーネスの試験実装リポジトリ(2026-09-23〜)。2026-09-25 に配布版へ揃え、
       config.json と Harness Sync ワークフローを導入済み(unity-renderer PR #28)。
-      AGENTS.md に artgraph の節を追記しているため、同期時は AGENTS.md を対象から外すこと。
+      AGENTS.md は artgraph の節を追記した独自ファイル(マーカー無し)。2026-10-02 に SDD を unity-sdd-kit へ
+      移行(unity-renderer PR #30)。新しい Harness Sync は AGENTS.md を扱わず、SDD Sync はマーカー無しの
+      AGENTS.md を上書きしないため、どちらの同期でも AGENTS.md は保たれる。
 
   - name: unity-sdd-kit
     github: Hidano-Dev/unity-sdd-kit
@@ -83,11 +85,13 @@ repos:
       status: pilot
     notes: >-
       2026-09-27 に Onboard Repository ワークフローで導入(PR: https://github.com/Hidano-Dev/FacialControl/pull/19)。
+      2026-10-02 に SDD を unity-sdd-kit へ移行(FacialControl PR #37)。独自コマンド /kiro:spec-run-multi は
+      unity-sdd-kit に取り込み(unity-sdd-kit PR #5)。
 
   - name: volumetric-laser-beam
     github: Hidano-Dev/volumetric-laser-beam
     role: execution
-    sync: template-init   # unity-sdd-template 生成先(orchestration-sync.yml で追従)。harness-sync.yml への移行が必要(docs/changelog.md 2026-10-02)
+    sync: workflow   # .github/workflows/harness-sync.yml
     harness:
       config: true
       linear:
@@ -103,7 +107,9 @@ repos:
         connectors: [Linear]
       status: pilot
     notes: >-
-      2026-09-29 に Onboard Repository ワークフローで導入。
+      2026-09-29 に Onboard Repository ワークフローで導入。unity-sdd-template 生成先。
+      2026-10-02 に orchestration-sync.yml(旧経路)から harness-sync.yml + unity-sdd-kit の SDD Sync へ移行
+      (volumetric-laser-beam PR #1)。
 
   - name: oscdesk
     github: Hidano-Dev/oscdesk
@@ -124,4 +130,4 @@ repos:
         connectors: [Linear]
       status: pilot
     notes: >-
-      2026-09-29 に Onboard Repository ワークフローで導入。
+      2026-09-29 に Onboard Repository ワークフローで導入。2026-10-02 に SDD を unity-sdd-kit へ移行(oscdesk PR #13)。
