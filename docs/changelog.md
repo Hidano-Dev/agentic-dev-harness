@@ -8,7 +8,7 @@
 - `.claude/skills/linear-worker/SKILL.md` — 「人間の保留が無い」の条件が逆転していたのを修正(未解除・未回答の
   保留が 1 件でも残っていればマージしない)。レビューボットを再トリガーした巡回ではその PR をマージせず、
   フェイルオープンの待機期限は最後の push と最後の再トリガーの遅い方から数える
-- `auto_merge.protected_paths` の既定にルートの `CLAUDE.md` `AGENTS.md` を追加(ワーカーの行動制約を書いた
+- `auto_merge.protected_paths` の既定にルートの `CLAUDE.md` `AGENTS.md` と `.agents/` `.codex/` を追加(ワーカーの行動制約を書いた
   ファイルを変える PR を自動マージしない)。既存の config には移行 `2026-10-02-protect-root-instructions` で
   Harness Sync 実行時に追加される
 - `templates/consumer/harness-sync.yml` — 同期先の途中のディレクトリが submodule(gitlink)の場合も中止する

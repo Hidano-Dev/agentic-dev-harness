@@ -24,8 +24,8 @@ from pathlib import Path
 CONFIG_REL = Path(".kiro/orchestration/config.json")
 # SKILL.md 設定表の既定値。キーが無い config ではワーカーがこれを使う
 DEFAULT_PROTECTED_PATHS = [".claude/", ".github/", ".kiro/settings/"]
-# ワーカーの行動制約を書いたルートの指示ファイル(2026-10-02 に保護対象へ追加)
-ROOT_INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md"]
+# ワーカーの行動制約を書いた指示ファイル・Codex 向けの skill / エージェント定義(2026-10-02 に保護対象へ追加)
+ROOT_INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md", ".agents/", ".codex/"]
 
 
 class NotApplicable(Exception):
@@ -76,7 +76,7 @@ def protect_orchestration(cfg: dict) -> str | None:
 
 
 def protect_root_instructions(cfg: dict) -> str | None:
-    """ルートの CLAUDE.md / AGENTS.md(ワーカーの行動制約)を変える PR が自動マージされないよう、
+    """ルートの CLAUDE.md / AGENTS.md と .agents/ .codex/(ワーカーの行動制約)を変える PR が自動マージされないよう、
     protected_paths に追加する。"""
     am = _auto_merge(cfg)
     paths = am.get("protected_paths")

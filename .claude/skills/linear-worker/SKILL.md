@@ -45,7 +45,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `worker.backlog_doc` | マージ後に届いた軽微な指摘の記録先 | `docs/backlog.md` |
 | `auto_merge.enabled` | 自動マージを許可するか | true(雛形の値。キーが無い場合は false として扱う) |
 | `auto_merge.method` | `merge` / `squash` / `rebase` | `merge` |
-| `auto_merge.protected_paths` | 変更していたら自動マージしないパス接頭辞 | `[".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/", "CLAUDE.md", "AGENTS.md"]` |
+| `auto_merge.protected_paths` | 変更していたら自動マージしないパス接頭辞 | `[".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/", "CLAUDE.md", "AGENTS.md", ".agents/", ".codex/"]` |
 | `auto_merge.merge_parked` | マージ承認待ちで駐機した PR を、巡回で条件を満たせばマージ + ブランチ削除するか(§1-A 巡回マージ。`enabled` とは独立) | true |
 | `reporting.linear_status` | 終了時に Linear プロジェクトへステータス更新を投稿するか(§5) | true |
 | `reporting.notion` | 終了時に Linear プロジェクトの Overview にリンクされた Notion ページの古くなった記述を直すか(§5) | true |
@@ -503,7 +503,7 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
 マージ後、Linear の自動遷移(Done)を確認し、失敗していれば手動で Done にする。
 
 **自動マージの除外**: PR が `auto_merge.protected_paths`(既定 `.claude/` `.github/`
-`.kiro/settings/` `.kiro/orchestration/` とルートの `CLAUDE.md` `AGENTS.md`)などワーカー自身のポリシー・権限・CI 定義・
+`.kiro/settings/` `.kiro/orchestration/` `.agents/` `.codex/` とルートの `CLAUDE.md` `AGENTS.md`)などワーカー自身のポリシー・権限・CI 定義・
 この config を変更する場合は自動マージ
 せず、ユーザーの承認を待つ(ワーカーが自分の制約を自分で緩めない)。承認待ちに
 入った時点で §3 の駐機手順(`駐機理由: merge-approval`)に従い claim を解放して
