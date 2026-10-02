@@ -1,9 +1,9 @@
 # 新しいリポジトリでハーネスを動かす(導入手順)
 
 対象: 本リポジトリの配布物を取り込み、Linear 駆動の自律ワーカー(linear-worker)を
-定期実行で動かしたいリポジトリ。SDD ワークフローだけ使いたい場合は手順 1 で
-`sdd_only` を on にする(config.json が作られないので linear-worker は起動せず、
-Git 運用も従来どおりユーザー承認制になる)。
+定期実行で動かしたいリポジトリ。SDD ワークフロー(kiro commands / dev-orchestrator)は
+本リポジトリに含まれないので、使う場合は [unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit) の
+手順で別途導入する(SDD だけ使いたい場合は本手順は不要)。
 
 ファイルのコピー・項目埋め・台帳登録は本リポジトリの Actions(**Onboard Repository**)が
 行う。人が手でやるのは「入力フォームを埋める」「PR をマージする」「Routine を作る」
@@ -37,7 +37,6 @@ Git 運用も従来どおりユーザー承認制になる)。
 |---|---|
 | `target_repo` | `owner/name` |
 | `linear_team` | ワーカーが拾うキューのチーム名。空欄なら variable `LINEAR_DEFAULT_TEAM`(どちらも無ければ失敗) |
-| `sdd_only` | on にすると **SDD ワークフローのみ導入**(config.json なし・Linear / Routine 不要。`linear_team` は無視) |
 | `review_bot` | `codex` または `none`。config の `review.bot` を決めるだけで、GitHub 側のレビュー設定(App のインストール・自動レビュー)は変えない |
 | `direct_push` | 既定は PR 作成。新規リポジトリで即反映したいときだけ on。実行ごとの指定で保存されない(次回は既定に戻る) |
 
@@ -48,16 +47,16 @@ Git 運用も従来どおりユーザー承認制になる)。
 | `linear.project` | リポジトリ名(`owner/name` の `name`)と同名。無ければワークフローが作る |
 | `linear.labels` | `needs-human` / `needs-local`。ラベルを付ける判断はワーカーが行う(着手後に実機が必要と分かった Issue に自分で付けて手放す) |
 | `checks.fast` | 空。空ならワーカーが CI 定義・`package.json` 等から lint / typecheck / test 相当を推定して実行する。固定したいコマンドがあれば入れる |
-| `AGENTS.md` | 配布版の先頭にマーカー行(`managed-by: agentic-dev-harness`)がある。対象にマーカーの無い `AGENTS.md` があれば独自ファイルとみなし、導入時も同期時も上書きしない。独自の追記をしたらマーカー行を消す |
 
 ワークフローが行うこと:
 
 1. **Linear**(`LINEAR_API_KEY` がある場合): チーム名の存在を確認し(無ければ候補一覧を出して失敗する。config に誤った名前が入るのを防ぐ)、リポジトリ名と同名のプロジェクトを確認して無ければ作り(同名が別チームにだけある場合は重複を作らず失敗する)、`needs-human` / `needs-local` のラベルを説明文付きで作る(既にあれば何もしない)
-2. **対象リポジトリ**: 配布物(`.claude .codex .kiro .agents AGENTS.md`)を上書きコピー(独自の `AGENTS.md` は除く)、
-   `.github/workflows/harness-sync.yml` を配置(unity-sdd-template 生成先は既存の
-   `orchestration-sync.yml` を使うので置かない)、ルート `CLAUDE.md` に
-   `@.claude/rules/sdd-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
-   生成(`auto_merge.enabled` は true)→ `chore: onboard agentic-dev-harness` として PR を作成
+2. **対象リポジトリ**: 配布物(`.claude/skills/linear-worker` `.claude/rules/git-workflow.md`)をコピー、
+   `.github/workflows/harness-sync.yml` を配置(旧版があれば配布版に差し替える)、ルート `CLAUDE.md` に
+   `@.claude/rules/git-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
+   生成(`auto_merge.enabled` は true)→ `chore: onboard agentic-dev-harness` として PR を作成。
+   SDD 一式(`.claude/commands/kiro` 等)・`AGENTS.md`・unity-sdd-template 生成先の
+   `orchestration-sync.yml` には触れない
 3. **台帳**: `registry/repos.yaml` にエントリを追加して本リポジトリにコミット
    (Routine の ID は後で手順 4 で埋める)
 4. **ジョブサマリ**に「残りの手作業」と **Routine 設定シート**(名前・cron・ソース・
@@ -101,13 +100,13 @@ PR の `config.json` を確認してマージする。規約から変えたい�
   `LINEAR_API_KEY` を置いていない場合はこの 2 つとリポジトリ名のプロジェクトを手で作る
 - Issue の書き方: タイトルは英語、本文は日本語でよい。1 Issue = 1 PR の粒度にする。
   複数 Issue にまたがる設計(1 つの実装単位が複数要件を跨ぐ)は、ワーカーが `needs-human` を
-  付けて質問する。spec(`.kiro/specs/`)由来の作業は tasks.md のタスク粒度で Issue を切ると
-  ワーカーが迷わない
+  付けて質問する。SDD(unity-sdd-kit)導入リポジトリでは、spec(`.kiro/specs/`)由来の作業は
+  tasks.md のタスク粒度で Issue を切るとワーカーが迷わない
 
 ## 運用中の注意
 
-- 配布物(`.claude/` など)を実行リポジトリ側で直接編集しない。直した場合は本リポジトリへ戻す。
-  最新化は実行リポジトリの Actions で `Harness Sync`(生成先は `Orchestration Sync`)を実行する
+- 配布物(`.claude/skills/linear-worker/` `.claude/rules/git-workflow.md`)を実行リポジトリ側で
+  直接編集しない。直した場合は本リポジトリへ戻す。最新化は実行リポジトリの Actions で `Harness Sync` を実行する
 - Routine が同時に 2 つ以上動く構成にしない(並行度 1 が前提。複数リポジトリはそれぞれ
   別 Routine でよいが、同一リポジトリに 2 本立てない)
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。
@@ -119,8 +118,9 @@ PR の `config.json` を確認してマージする。規約から変えたい�
 PAT を用意できない等の理由で Onboard Repository を使えない場合は、同じことを手で行う:
 
 1. `templates/consumer/harness-sync.yml` を対象の `.github/workflows/harness-sync.yml` に置き、
-   Actions から 1 回実行する(独自の `AGENTS.md` はマーカーが無いので上書きされない)
-2. ルート `CLAUDE.md` に `@.claude/rules/sdd-workflow.md` の行を入れる
+   Actions から 1 回実行する(配布物のコピーと、ルート `CLAUDE.md` への
+   `@.claude/rules/git-workflow.md` の追記まで行われる)
+2. ルート `CLAUDE.md` に `@.claude/rules/git-workflow.md` の行が入ったことを確認する
 3. `.claude/skills/linear-worker/templates/orchestration-config.json` を
    `.kiro/orchestration/config.json` にコピーして値を埋める(ローカルで
    `python3 scripts/onboard/render_config.py --repo owner/name --team <チーム> --out <path>` でも生成できる)

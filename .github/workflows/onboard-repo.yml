@@ -6,19 +6,18 @@
 #
 #   1. Linear: チームの存在確認、リポジトリ名と同名のプロジェクトの確認(無ければ作成)、
 #      needs-human / needs-local ラベルの作成(secret LINEAR_API_KEY がある場合のみ。無ければスキップ)
-#   2. 対象リポジトリ: 配布物(.claude .codex .kiro .agents AGENTS.md)の同期、
-#      harness-sync.yml の配置、CLAUDE.md への import 行、.kiro/orchestration/config.json の
-#      生成 → PR を作成(または default branch へ直接 push)
+#   2. 対象リポジトリ: 配布物(.claude/skills/linear-worker, .claude/rules/git-workflow.md)の同期、
+#      harness-sync.yml の配置、CLAUDE.md への import 行(@.claude/rules/git-workflow.md)、
+#      .kiro/orchestration/config.json の生成 → PR を作成(または default branch へ直接 push)
 #   3. 本リポジトリ: registry/repos.yaml にエントリを追加してコミット
 #   4. ジョブサマリに「残りの手作業」と Routine 設定シート(プロンプト本文込み)を出力
 #
 # フォームで決めるのはチーム名・外部レビューボット・PR にするか直接 push か、だけ。
 # 残りは規約で決める(Linear プロジェクト = リポジトリ名、ラベル = needs-human / needs-local、
-# checks.fast は空でワーカーが推定、AGENTS.md は対象側にマーカー無しの独自ファイルがあれば触らない)。
-# 変えたい場合は生成後の config.json を編集する。
+# checks.fast は空でワーカーが推定)。変えたい場合は生成後の config.json を編集する。
 #
-# sdd_only を on にすると「SDD ワークフローのみ」の導入になる(config.json を作らず、
-# Linear・Routine 関連はすべて省略。台帳には harness: null で登録)。
+# SDD ワークフロー(kiro commands / dev-orchestrator / AGENTS.md)は本ハーネスに含まれない。
+# 必要なら unity-sdd-kit(https://github.com/Hidano-Dev/unity-sdd-kit)を別途導入する。
 #
 # 必要な secret(本リポジトリの Settings → Secrets and variables → Actions):
 #   HARNESS_ONBOARD_TOKEN … 対象リポジトリへ書き込める fine-grained PAT
@@ -47,11 +46,6 @@ on:
         required: false
         type: string
         default: ''
-      sdd_only:
-        description: 'SDD ワークフローのみ導入する(linear-worker なし。config.json / Linear / Routine を省略)'
-        required: false
-        type: boolean
-        default: false
       review_bot:
         description: '外部レビューボット(config の review.bot。GitHub 側のレビュー設定は変えない)'
         required: false
@@ -78,7 +72,6 @@ env:
   TARGET_REPO: ${{ inputs.target_repo }}
   LINEAR_TEAM_INPUT: ${{ inputs.linear_team }}
   LINEAR_DEFAULT_TEAM: ${{ vars.LINEAR_DEFAULT_TEAM }}
-  SDD_ONLY: ${{ inputs.sdd_only }}
   REVIEW_BOT: ${{ inputs.review_bot }}
   DIRECT_PUSH: ${{ inputs.direct_push }}
   # LINEAR_TEAM(入力 → variable の順で決めた実値)は "Check inputs" ステップが GITHUB_ENV に設定する
@@ -113,19 +106,14 @@ jobs:
           esac
           # 自由入力は前後の空白を落として正規化し、以降のステップは正規化後の値だけを見る
           trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
-          team=""
-          if [ "$SDD_ONLY" = "true" ]; then
-            echo "::notice::sdd_only のため SDD ワークフローのみ導入します(config.json / Linear / Routine は省略。linear_team は無視)"
-          else
-            team=$(trim "$LINEAR_TEAM_INPUT")
+          team=$(trim "$LINEAR_TEAM_INPUT")
+          if [ -z "$team" ]; then
+            team=$(trim "$LINEAR_DEFAULT_TEAM")
             if [ -z "$team" ]; then
-              team=$(trim "$LINEAR_DEFAULT_TEAM")
-              if [ -z "$team" ]; then
-                echo "::error::linear_team が空欄で、variable LINEAR_DEFAULT_TEAM も未設定です。linear_team を入力するか、Settings → Secrets and variables → Actions → Variables に LINEAR_DEFAULT_TEAM を置くか、sdd_only を選んでください"
-                exit 1
-              fi
-              echo "::notice::linear_team が空欄のため variable LINEAR_DEFAULT_TEAM('$team')を使います"
+              echo "::error::linear_team が空欄で、variable LINEAR_DEFAULT_TEAM も未設定です。linear_team を入力するか、Settings → Secrets and variables → Actions → Variables に LINEAR_DEFAULT_TEAM を置いてください(SDD のみ導入したい場合は本ワークフローではなく unity-sdd-kit を使う)"
+              exit 1
             fi
+            echo "::notice::linear_team が空欄のため variable LINEAR_DEFAULT_TEAM('$team')を使います"
           fi
           echo "LINEAR_TEAM=$team" >> "$GITHUB_ENV"
 
@@ -183,7 +171,7 @@ jobs:
         run: |
           # 書き込み先が submodule(gitlink, mode 160000)だと、コピーしても superproject の
           # git add には乗らず、配布物が欠けたまま成功に見えるので先に拒否する
-          gitlinks=$(git -C target ls-files --stage -- .claude .codex .kiro .agents AGENTS.md CLAUDE.md .github \
+          gitlinks=$(git -C target ls-files --stage -- .claude .kiro CLAUDE.md .github \
             | awk '$1 == "160000" { print $4 }')
           if [ -n "$gitlinks" ]; then
             echo "::error::対象リポジトリで同期先が submodule(gitlink)になっています: $(echo "$gitlinks" | tr '\n' ' ')— 通常のディレクトリにしてから再実行してください"
@@ -204,7 +192,7 @@ jobs:
       # 実値が誤っていればここで失敗し、対象リポジトリへの push / PR には進まない
       - name: Linear — verify team, ensure project and labels
         id: linear
-        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY != ''
+        if: env.LINEAR_API_KEY != ''
         run: |
           team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
           project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
@@ -222,7 +210,7 @@ jobs:
       # ワーカーは Issue を拾えない。ラベルと合わせて手動作成をサマリの手作業に載せる
       - name: Linear — skipped
         id: linear_skipped
-        if: env.SDD_ONLY != 'true' && env.LINEAR_API_KEY == ''
+        if: env.LINEAR_API_KEY == ''
         run: |
           team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
           project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
@@ -265,11 +253,7 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          if [ "$SDD_ONLY" = "true" ]; then
-            git commit -m "chore: onboard agentic-dev-harness (SDD workflow)"
-          else
-            git commit -m "chore: onboard agentic-dev-harness (SDD workflow + linear-worker)"
-          fi
+          git commit -m "chore: onboard agentic-dev-harness (linear-worker)"
 
           if [ "$DIRECT_PUSH" = "true" ]; then
             git push origin "HEAD:$DEFAULT_BRANCH"
@@ -295,35 +279,26 @@ jobs:
           git push -u origin "$branch"
 
           {
-            if [ "$SDD_ONLY" = "true" ]; then
-              echo "agentic-dev-harness の SDD ワークフロー(kiro commands / skills / rules)を導入します。"
-            else
-              echo "agentic-dev-harness(SDD ワークフロー + Linear 駆動の自律ワーカー linear-worker)を導入します。"
-            fi
+            echo "agentic-dev-harness(Linear 駆動の自律ワーカー linear-worker + Git 運用ルール)を導入します。"
             echo "[Onboard Repository]($RUN_URL) ワークフローが生成した PR です。"
             echo
             echo "## 内容"
             echo
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
-            if [ "$(jq -r .agents_md /tmp/bootstrap.json)" = "kept" ]; then
-              echo "- \`AGENTS.md\`: 独自ファイル(マーカー無し)のため上書きしていない。同期ワークフローも上書きしない"
-            fi
             case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
-              written)       echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
-              updated)       echo "- 既存の同期ワークフロー(旧版)の同期対象から \`AGENTS.md\` を外した(独自ファイルを守るため。新版に差し替えればマーカー判定で自動的に守られる)" ;;
-              template-init) echo "- 同期ワークフローは既存の \`orchestration-sync.yml\` を使用" ;;
-              *)             echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用" ;;
+              written)  echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
+              updated)  echo "- 既存の \`harness-sync.yml\`(旧版。SDD 一式も同期していた)を配布版に差し替え" ;;
+              *)        echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用(配布版と同一)" ;;
             esac
-            echo "- \`CLAUDE.md\`: $(jq -r .claude_md /tmp/bootstrap.json)(\`@.claude/rules/sdd-workflow.md\` の import)"
+            echo "- \`CLAUDE.md\`: $(jq -r .claude_md /tmp/bootstrap.json)(\`@.claude/rules/git-workflow.md\` の import)"
             echo "- \`.kiro/orchestration/config.json\`: $(jq -r .config /tmp/bootstrap.json)"
-            if [ "$SDD_ONLY" != "true" ]; then
-              echo
-              echo "## マージ前に確認すること"
-              echo
-              echo "- \`config.json\` の値(linear.team / project = リポジトリ名 / labels / review.bot)。変えたい項目はここで編集する"
-              echo "- \`auto_merge.enabled\` は true(ゲートを通過した PR は自動マージされる)。先にゲートの動きを確認したい場合は false にして数回まわしてから true に戻す"
-              echo "- \`checks.fast\` は空でもワーカーが CI 定義等から推定して実行する。固定したいコマンドがあれば入れる"
-            fi
+            echo
+            echo "## マージ前に確認すること"
+            echo
+            echo "- \`config.json\` の値(linear.team / project = リポジトリ名 / labels / review.bot)。変えたい項目はここで編集する"
+            echo "- \`auto_merge.enabled\` は true(ゲートを通過した PR は自動マージされる)。先にゲートの動きを確認したい場合は false にして数回まわしてから true に戻す"
+            echo "- \`checks.fast\` は空でもワーカーが CI 定義等から推定して実行する。固定したいコマンドがあれば入れる"
+            echo "- SDD ワークフロー(kiro commands / dev-orchestrator)は含まれない。必要なら [unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit) を別途導入する"
             echo
             echo "導入手順の全体: $DOCS_URL"
           } > /tmp/pr-body.md
@@ -362,24 +337,18 @@ jobs:
             attempt=$((attempt + 1))
             git fetch -q origin "+refs/heads/$REGISTRY_BRANCH:refs/remotes/origin/$REGISTRY_BRANCH"
             git -C "$wt" reset -q --hard "origin/$REGISTRY_BRANCH"
-            if [ "$SDD_ONLY" = "true" ]; then
-              python3 scripts/onboard/registry.py --file "$wt/registry/repos.yaml" add --sdd-only \
-                --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" \
-                --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
-            else
-              # 台帳にはフォーム入力ではなく config.json の実値(新規生成なら入力と同じ、
-              # 既存 config ならその値)を載せる
-              team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
-              project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
-              needs_human=$(jq -r '.effective.needs_human // "needs-human"' /tmp/bootstrap.json)
-              needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
-              python3 scripts/onboard/registry.py --file "$wt/registry/repos.yaml" add \
-                --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
-                --team "$team" --project "$project" \
-                --needs-human "$needs_human" --needs-local "$needs_local" \
-                --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
-                --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
-            fi
+            # 台帳にはフォーム入力ではなく config.json の実値(新規生成なら入力と同じ、
+            # 既存 config ならその値)を載せる
+            team=$(jq -r '.effective.team // empty' /tmp/bootstrap.json)
+            project=$(jq -r '.effective.project // empty' /tmp/bootstrap.json)
+            needs_human=$(jq -r '.effective.needs_human // "needs-human"' /tmp/bootstrap.json)
+            needs_local=$(jq -r '.effective.needs_local // "needs-local"' /tmp/bootstrap.json)
+            python3 scripts/onboard/registry.py --file "$wt/registry/repos.yaml" add \
+              --name "$NAME" --github "$REPO" --sync "$SYNC_MODE" --config-state "$config_state" \
+              --team "$team" --project "$project" \
+              --needs-human "$needs_human" --needs-local "$needs_local" \
+              --routine-name "自律駆動ハーネス ($NAME)" --cron "$ROUTINE_CRON" \
+              --date "$date_utc" --pr-url "$PR_URL" | tee /tmp/registry.log
             git -C "$wt" add registry/repos.yaml
             if git -C "$wt" diff --cached --quiet; then
               # ログは複数行になり得るので 1 行に畳んでから output にする
@@ -410,11 +379,9 @@ jobs:
           REGISTRY_NOTE: ${{ steps.registry.outputs.note }}
           ENTRY_NAME: ${{ steps.registry.outputs.entry_name }}
         run: |
-          extra=()
-          if [ "$SDD_ONLY" = "true" ]; then extra+=(--sdd-only); fi
           python3 scripts/onboard/routine_sheet.py \
             --harness . --repo "$REPO" --default-branch "$DEFAULT_BRANCH" \
             --cron "$ROUTINE_CRON" --result /tmp/bootstrap.json \
             --pr-url "$PR_URL" --pushed-to "$PUSHED_TO" \
             --linear-note "${LINEAR_NOTE:-スキップ(LINEAR_API_KEY 未設定)}" --linear-manual "$LINEAR_MANUAL" \
-            --registry-note "$REGISTRY_NOTE" --entry-name "$ENTRY_NAME" "${extra[@]}" >> "$GITHUB_STEP_SUMMARY"
+            --registry-note "$REGISTRY_NOTE" --entry-name "$ENTRY_NAME" >> "$GITHUB_STEP_SUMMARY"

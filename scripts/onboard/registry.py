@@ -48,7 +48,7 @@ def render_entry(a: argparse.Namespace) -> str:
     project = yaml_str(a.project) if a.project.strip() else "null"
     sync_comment = {
         "workflow": ".github/workflows/harness-sync.yml",
-        "template-init": "unity-sdd-template 生成先(orchestration-sync.yml で追従)",
+        "template-init": "unity-sdd-template 生成先(orchestration-sync.yml で追従していた旧経路)",
         "manual": "手動コピー",
     }[a.sync]
     config_comment = {

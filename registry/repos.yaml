@@ -1,13 +1,17 @@
 # 実行リポジトリ台帳
 # -----------------------------------------------------------------------------
-# 本リポジトリの配布物(SDD ワークフロー + linear-worker)を取り込んでいるリポジトリと、
+# 本リポジトリの配布物(linear-worker + Git 運用ルール)を取り込んでいるリポジトリと、
 # その上で動く Routine(定期実行)の一覧。配布物には含まれない(台帳専用)。
+# SDD ワークフロー一式は 2026-10-02 に unity-sdd-kit へ移管した(docs/changelog.md)。
 #
 # フィールド:
 #   github        … owner/name
 #   role          … execution(実行リポジトリ) | template(生成テンプレート。自身は実行しない)
-#   sync          … workflow(取り込み側の同期ワークフローで追従) | manual(手動コピー) | template-init(生成時のみ)
-#   harness       … linear-worker を動かしているか。null なら SDD 配布物のみ
+#                   | distributor(別系統の配布元。本リポジトリの配布物は取り込まない)
+#   sync          … workflow(取り込み側の同期ワークフローで追従) | manual(手動コピー)
+#                   | template-init(旧 unity-sdd-template 生成先。orchestration-sync.yml で追従していた旧経路)
+#                   | none(取り込まない)
+#   harness       … linear-worker を動かしているか。null なら linear-worker なし
 #     config      … .kiro/orchestration/config.json の有無(true / false / pending)
 #     linear      … チーム / プロジェクト
 #     routine     … claude.ai/code/routines 上の Routine(名前・cron は UTC・ID)
@@ -39,15 +43,25 @@ repos:
       config.json と Harness Sync ワークフローを導入済み(unity-renderer PR #28)。
       AGENTS.md に artgraph の節を追記しているため、同期時は AGENTS.md を対象から外すこと。
 
-  - name: unity-sdd-template
-    github: Hidano-Dev/unity-sdd-template
-    role: template
-    sync: template-init   # 生成先リポジトリが template-init.yml / orchestration-sync.yml で取り込む
+  - name: unity-sdd-kit
+    github: Hidano-Dev/unity-sdd-kit
+    role: distributor
+    sync: none
     harness: null
     notes: >-
-      新規 Unity プロジェクト用の GitHub テンプレート。テンプレート自身は配布物を持たず、
-      生成先リポジトリが本リポジトリの main から取り込む。生成先で linear-worker を動かす場合は
-      docs/onboarding.md の手順で config.json と Routine を追加する。
+      旧 unity-sdd-template。2026-10-02 に Unity プロジェクト生成部分を unity-project-template へ分離し、
+      本リポジトリから SDD ワークフロー一式を引き取って SDD の正本(Unity 向け拡張込み)になった。
+      本リポジトリの配布物とは所有パスが重ならず、取り込み側では両方の同期ワークフローが共存する。
+
+  - name: unity-project-template
+    github: Hidano-Dev/unity-project-template
+    role: template
+    sync: none
+    harness: null
+    notes: >-
+      新規 Unity プロジェクト用の GitHub テンプレート(unity-sdd-template から分離)。SDD / linear-worker を
+      持たない。生成先で linear-worker を動かす場合は Onboard Repository を、SDD を使う場合は
+      unity-sdd-kit を導入する。
 
   - name: FacialControl
     github: Hidano-Dev/FacialControl
@@ -73,7 +87,7 @@ repos:
   - name: volumetric-laser-beam
     github: Hidano-Dev/volumetric-laser-beam
     role: execution
-    sync: template-init   # unity-sdd-template 生成先(orchestration-sync.yml で追従)
+    sync: template-init   # unity-sdd-template 生成先(orchestration-sync.yml で追従)。harness-sync.yml への移行が必要(docs/changelog.md 2026-10-02)
     harness:
       config: true
       linear:

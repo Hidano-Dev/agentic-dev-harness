@@ -2,24 +2,23 @@
 # harness アセット同期ワークフロー(取り込み側リポジトリに置く)
 # -----------------------------------------------------------------------------
 # 手動実行(workflow_dispatch)で agentic-dev-harness の最新 main から
-# SDD ワークフロー + linear-worker 一式(.claude / .codex / .kiro / .agents / AGENTS.md)を
-# 取り込み直す。差分がある時だけ "chore: sync harness assets" としてコミットする。
+# linear-worker と Git 運用ルール(SYNC_PATHS のパス)を取り込み直す。
+# 差分がある時だけ "chore: sync harness assets" としてコミットする。
 #
-# - ルート CLAUDE.md には触れない(プロジェクト固有メモは無傷。
-#   SDD メモは CLAUDE.md 内の @.claude/rules/sdd-workflow.md import で参照)
-# - コピーはファイル単位の上書きマージ。プロジェクト側で独自に追加した
-#   ファイル(.claude/settings.json、.kiro/specs、.kiro/steering、
-#   .kiro/orchestration/config.json 等)は残る。harness 側で削除された
-#   ファイルは自動では消えないため、必要なら手動で削除する
+# - 同期するのは harness が所有するパス(SYNC_PATHS)だけ。ディレクトリは丸ごと harness
+#   管理なので、配布元で削除されたファイルは取り込み側からも削除して揃える。
+#   それ以外(.claude/settings.json、自作 skill、.kiro/specs 等)には触れない
+# - SDD ワークフロー(kiro commands / dev-orchestrator / .kiro/settings / AGENTS.md)は
+#   本ワークフローの対象外。unity-sdd-kit(https://github.com/Hidano-Dev/unity-sdd-kit)
+#   の同期ワークフローで取り込む
+# - ルート CLAUDE.md は、Git 運用ルールの import 行(CLAUDE_MD_IMPORT)が無い場合だけ
+#   末尾に追記する(それ以外の内容には触れない)
 # - .kiro/orchestration/config.json はコピーしないが、配布元が定義した移行
 #   (.claude/skills/linear-worker/scripts/migrate_config.py。対象は auto_merge のみ)を
 #   1 度ずつ適用する。適用済みの移行は config の applied_migrations に記録され、
 #   その後に人間が値を戻しても再適用しない
 # - このワークフロー自体(.github/workflows/)は GITHUB_TOKEN では更新できないため同期しない。
 #   配布版と異なる場合は警告するので、templates/consumer/harness-sync.yml で差し替える
-# - AGENTS.md は配布版の先頭にマーカー(AGENTS_MD_MARKER)が入っている。取り込み側の
-#   AGENTS.md にマーカーが無ければ独自ファイルとみなして上書きしない(プロジェクト固有の
-#   追記をしたらマーカー行を消す。SYNC_PATHS を編集する必要はない)
 # - 取り込み元が public リポジトリなのでトークン不要。private にする場合は
 #   checkout 用の PAT を secret に置き、clone URL に埋め込む
 #
@@ -37,10 +36,10 @@ env:
   # 配布元(agentic-dev-harness)
   HARNESS_REPO: Hidano-Dev/agentic-dev-harness
   HARNESS_REF: main
-  # 取り込むパス(空白区切り)
-  SYNC_PATHS: ".claude .codex .kiro .agents AGENTS.md"
-  # 配布版 AGENTS.md の先頭にあるマーカー。無い AGENTS.md は独自ファイルとみなし上書きしない
-  AGENTS_MD_MARKER: "managed-by: agentic-dev-harness"
+  # 取り込むパス(空白区切り。harness が所有するパスのみ)
+  SYNC_PATHS: ".claude/skills/linear-worker .claude/rules/git-workflow.md"
+  # ルート CLAUDE.md に必要な import 行
+  CLAUDE_MD_IMPORT: "@.claude/rules/git-workflow.md"
 
 jobs:
   sync:
@@ -50,15 +49,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 同期先(とその配下)にシンボリックリンクがあると cp -rf はリンク先へ書き込み、後続の
-      # git add -A / push が無関係なファイルの変更を既定ブランチへ直接反映してしまう。
-      # 同期先が submodule(gitlink, mode 160000)だと、書き込んでも superproject の git add に
-      # 乗らず、更新されないまま正常終了に見える。どちらもコピー前に検査して失敗させる
+      # 同期先(とその途中のディレクトリ・配下)にシンボリックリンクがあると cp はリンク先へ
+      # 書き込み、後続の git add -A / push が無関係なファイルの変更を既定ブランチへ直接反映して
+      # しまう。同期先が submodule(gitlink, mode 160000)だと、書き込んでも superproject の
+      # git add に乗らず、更新されないまま正常終了に見える。どちらもコピー前に検査して失敗させる
       - name: Refuse symlinks and submodules under sync targets
         run: |
           bad=""
-          for p in $SYNC_PATHS; do
-            if [ -e "$p" ] || [ -L "$p" ]; then
+          for p in $SYNC_PATHS CLAUDE.md; do
+            # 途中のディレクトリ(.claude、.claude/skills 等)がリンクでないこと
+            cur=""
+            IFS=/ read -ra parts <<< "$p"
+            for part in "${parts[@]}"; do
+              cur="${cur:+$cur/}$part"
+              if [ -L "$cur" ]; then bad="$bad$cur"$'\n'; break; fi
+            done
+            if [ -d "$p" ] && [ ! -L "$p" ]; then
               found=$(find "$p" -type l -print)
               if [ -n "$found" ]; then bad="$bad$found"$'\n'; fi
             fi
@@ -74,15 +80,19 @@ jobs:
         run: |
           git clone --depth 1 --branch "$HARNESS_REF" --single-branch "https://github.com/${HARNESS_REPO}.git" /tmp/harness
           for p in $SYNC_PATHS; do
-            if [ ! -e "/tmp/harness/$p" ]; then
+            src="/tmp/harness/$p"
+            if [ ! -e "$src" ]; then
               echo "::warning::$p は配布元に存在しないためスキップしました"
               continue
             fi
-            if [ "$p" = "AGENTS.md" ] && [ -f AGENTS.md ] && ! grep -qF "$AGENTS_MD_MARKER" AGENTS.md; then
-              echo "::notice::AGENTS.md にマーカー($AGENTS_MD_MARKER)が無いため独自ファイルとみなし、上書きしません"
-              continue
+            mkdir -p "$(dirname "$p")"
+            if [ -d "$src" ]; then
+              # ディレクトリは harness 管理なので、配布元に無いファイルを残さないよう丸ごと置き換える
+              rm -rf "$p"
+              cp -R "$src" "$p"
+            else
+              cp -f "$src" "$p"
             fi
-            cp -rf "/tmp/harness/$p" ./
           done
           wf=.github/workflows/harness-sync.yml
           if [ -f "$wf" ] && ! cmp -s /tmp/harness/templates/consumer/harness-sync.yml "$wf"; then
@@ -90,16 +100,25 @@ jobs:
           fi
           rm -rf /tmp/harness
 
+      # Git 運用ルール(linear-worker の入口を含む)は CLAUDE.md の import 行から読み込まれる。
+      # 行が無ければ末尾に追記する(既存の内容には触れない)
+      - name: Ensure CLAUDE.md import
+        run: |
+          if [ -f CLAUDE.md ] && grep -qxF "$CLAUDE_MD_IMPORT" CLAUDE.md; then
+            exit 0
+          fi
+          if [ -s CLAUDE.md ] && [ -n "$(tail -c1 CLAUDE.md)" ]; then echo >> CLAUDE.md; fi
+          if [ -s CLAUDE.md ]; then echo >> CLAUDE.md; fi
+          echo "$CLAUDE_MD_IMPORT" >> CLAUDE.md
+          echo "::notice::CLAUDE.md に $CLAUDE_MD_IMPORT を追記しました"
+
       # config.json は同期対象外だが、雛形のプレースホルダが残ったまま・JSON として壊れたまま
       # だと linear-worker が誤動作するので、同期のついでに検査して警告する
-      - name: Check orchestration config and CLAUDE.md import
+      - name: Check orchestration config
         run: |
-          # CLAUDE.md の import は SDD のみの導入でも必要なので、config の有無に関わらず検査する
-          grep -qxF '@.claude/rules/sdd-workflow.md' CLAUDE.md 2>/dev/null \
-            || echo "::warning::CLAUDE.md に '@.claude/rules/sdd-workflow.md' の import 行がありません"
           f=.kiro/orchestration/config.json
           if [ ! -f "$f" ]; then
-            echo "::notice::$f が無いため linear-worker は起動しません(SDD ワークフローのみ)"
+            echo "::notice::$f が無いため linear-worker は起動しません(Git 運用ルールのみ)"
           else
             python3 -c "import json,sys; json.load(open('$f'))" \
               || { echo "::error::$f が JSON として不正です"; exit 1; }

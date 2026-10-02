@@ -14,8 +14,9 @@ claude.ai/code の Routine(定期実行クラウドセッション)に設定す�
 推奨設定: cron は 1 時間間隔(Routine の最小間隔)、ソースはリポジトリのデフォルト
 ブランチ、MCP コネクタは Linear(必須)と Notion(Linear プロジェクトの Overview に
 Notion ページをリンクしている場合)。許可ツールは Bash / Read / Write / Edit /
-Glob / Grep / WebFetch / WebSearch に加え、`/code-review` `/kiro:validate-impl`
-`/kiro:spec-impl` を起動するための Skill / SlashCommand / Task(Agent)。
+Glob / Grep / WebFetch / WebSearch に加え、`/code-review`(SDD = unity-sdd-kit 導入
+リポジトリでは `/kiro:validate-impl` `/kiro:spec-impl` も)を起動するための
+Skill / SlashCommand / Task(Agent)。
 
 ---
 

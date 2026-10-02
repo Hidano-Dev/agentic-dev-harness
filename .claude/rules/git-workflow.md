@@ -6,6 +6,13 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
 `.kiro/orchestration/config.json`(雛形: `.claude/skills/linear-worker/templates/orchestration-config.json`)
 の設定で切り替える。ファイルが無いリポジトリでは Linear 連携なし・自動マージなしとして扱う。
 
+- Linear をタスクキューとする自律運用(定期実行)は `.claude/skills/linear-worker/SKILL.md` に従う。
+  対象チーム・ラベル・自動マージ可否などリポジトリ固有の値は `.kiro/orchestration/config.json` に置き、
+  スキル本文には書かない。
+- 本文中の dev-orchestrator / `/kiro:*` / `.kiro/specs/` に関する規定は、SDD ワークフロー
+  ([unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit))が導入されているリポジトリでのみ適用する。
+  SDD が無いリポジトリでは「spec 由来の実装」は発生しないため、該当する例外・条件は読み飛ばしてよい。
+
 ## 1. 作業開始時: ブランチ確認
 
 - 作業に着手する前に `git branch --show-current` で現在のブランチを確認する。
@@ -20,7 +27,7 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   `git fetch origin && git pull --ff-only`（または `git switch -c <branch> origin/<default>`）で
   リモートと同期してから作業ブランチを作成する。
   ただし、その先行作業の続き・修正を依頼されている場合はそのブランチをそのまま使ってよい。
-- 命名規約（dev-orchestrator の規約に準拠）:
+- 命名規約（SDD 導入時は dev-orchestrator もこの規約に従う）:
   - `<type>`: 機能追加 `feature` / バグ修正 `fix` / ドキュメント・設定等の雑務 `chore` または `docs`
   - `<topic>`: 英小文字ケバブケース。ブランチ名全体を英語で書き、日本語を含めない
   - **Linear 連携あり**（config に `linear.team` がある）: `<type>/<issue-id>-<topic>`。
@@ -53,12 +60,12 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   - 初回: `git push -u origin <branch>`
 - PR が未作成なら `gh pr create` で作成する。
 - **例外**: push / PR 作成は、実行中のワークフローまたはユーザーがそれを許可している場合に限る。
-  dev-orchestrator の `--stop-after implementation` のように「PR を作らない」指定がある実行や、
+  （SDD 導入時の）dev-orchestrator の `--stop-after implementation` のように「PR を作らない」指定がある実行や、
   ユーザーがローカル作業のみを求めている場合は、push / PR 作成を行わず完了報告に留める。
 
 ## 4. リモートレビュー待ち
 
-- **dev-orchestrator の除外**: dev-orchestrator（Phase 6）が作成した PR はこの待機ループの
+- **dev-orchestrator の除外（SDD 導入時）**: dev-orchestrator（Phase 6）が作成した PR はこの待機ループの
   対象外。同スキルの承認ポリシーどおり PR URL を即時報告して完了とし、PR レビューは人間に
   委ねる（ユーザーまたはワークフロー側で明示的にレビュー待機を指示された場合のみ待機する）。
 - Push 後、数分〜数十分でリモート上のコーディングエージェントによるレビューが PR コメントとして投稿される。
@@ -84,14 +91,14 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
 - **linear-worker の例外（フェイルオープン、2026-09-24 決定）**: `.claude/skills/
   linear-worker/SKILL.md` §4 の外部レビューゲートに限り、上記の待機期限に達しても「人間の
   レビューに委ねてループを終了する」のではなく、**他ゲート（一次ゲート全項目・CI）のみに
-  基づきマージ判定へ進む**（spec 由来の実装は `/kiro:validate-impl` 対応済みも含む。同スキルの
+  基づきマージ判定へ進む**（SDD 導入時、spec 由来の実装は `/kiro:validate-impl` 対応済みも含む。同スキルの
   手順を参照。この例外は linear-worker 経由の PR にのみ適用され、他の待機ループは本節の
   既定どおり人間へ委ねる）。
 
 ## 5. レビュー対応ループ
 
 - レビューコメントが来たら内容を確認し、必要な修正を行って commit → push する。
-- **spec 由来の実装 PR の例外**: dev-orchestrator / spec-run が作成した PR（`.kiro/specs/` の
+- **spec 由来の実装 PR の例外（SDD 導入時）**: dev-orchestrator / spec-run が作成した PR（`.kiro/specs/` の
   タスクに基づく実装）へのレビュー修正は、このループで直接 commit しない。該当タスクの
   実装フロー（`/kiro:spec-impl` 等）に戻して修正し、push 前に `/kiro:validate-impl` を
   再実行して検証証跡を更新してから push する（Gate D の証跡が古いまま PR を更新しない）。
@@ -116,7 +123,7 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   ユーザー承認なしで自動マージしてよい（`auto_merge.method`、`expectedHeadSha` 指定）。
   - 一次ゲート（能動レビュー・セッション内で完結）: config の `checks.fast` が
     ローカル green、`/code-review`（high）の全 finding を修正または理由付き棄却、
-    spec 由来の実装は `/kiro:validate-impl` も対応済み
+    SDD 導入時、spec 由来の実装は `/kiro:validate-impl` も対応済み
   - 二次ゲート（外部レビュー・機械判定）: 現在のヘッド SHA で CI green、
     外部レビューボット（`review.bot`）の summary コメントが現在ヘッドに対して
     ✅ Completed（または push 起点の待機期限に達し、linear-worker/SKILL.md §4 の
@@ -127,7 +134,7 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
 - **例外（従来どおりユーザー承認必須）**: config の `auto_merge.protected_paths`（既定
   `.claude/` / `.github/` / `.kiro/settings/` / `.kiro/orchestration/`）等のポリシー・権限・CI 定義・
   orchestration 設定を変更する PR、
-  spec の NO-GO ゲートに関わる判断、Issue のスコープを逸脱する変更。
+  （SDD 導入時の）spec の NO-GO ゲートに関わる判断、Issue のスコープを逸脱する変更。
   linear-worker はこれらの承認待ちに入った時点で claim を解放して駐機する
   （`.claude/skills/linear-worker/SKILL.md` §3 の駐機手順。判断待ち PR が
   後続の定期実行を塞がないようにするため）。

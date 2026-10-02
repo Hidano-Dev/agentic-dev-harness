@@ -15,11 +15,17 @@ Linear(設定ファイルで指定したチーム / プロジェクト)を唯一
 Git 運用は `.claude/rules/git-workflow.md`、spec 由来の実装は `.kiro/specs/` の
 SDD フローに従う。本書はその上に載る「選定・承認・マージ・停止」のポリシーである。
 
+SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキルとは別に
+[unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit) が配布する。本書の「spec 由来」
+「`/kiro:*`」「SDD フェーズ承認」に関する規定は SDD が導入されているリポジトリでのみ適用し、
+導入されていない(`.claude/commands/kiro/` が無い)リポジトリでは spec 由来の作業は発生しないので
+読み飛ばす。
+
 ## 設定(`.kiro/orchestration/config.json`)
 
 このスキルはリポジトリ固有の値を一切持たない。起動時に必ず
 `.kiro/orchestration/config.json` を読み、次のキーを使う(雛形:
-`templates/orchestration-config.json`。dev-orchestrator の `confirmation_channel` と
+`templates/orchestration-config.json`。SDD 導入時は dev-orchestrator の `confirmation_channel` と
 同じファイルに同居する)。**ファイルが無い・`linear.team` が無い場合は何も着手せず、
 「harness 設定なし」と報告して終了する**(対象キューが特定できないまま動かない)。
 
@@ -384,7 +390,7 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
    ため先に外さない)。マージで Done になった Issue に残ったラベルは無害なので
    放置してよい。
 
-### SDD フェーズ承認ポリシー(2026-09-23 決定)
+### SDD フェーズ承認ポリシー(2026-09-23 決定。SDD 導入リポジトリのみ)
 
 - **requirements**: 生成まで。承認は必ず人間。生成したら Issue にリンクを
   コメントし、上記の駐機手順(`needs-human` + claim 解放)で終了する。
