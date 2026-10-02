@@ -11,32 +11,37 @@ export PATH="$BIN:$PATH"
 # 注意: `curl | grep -m1` は grep が先に閉じて curl が 23 を返し pipefail で落ちるので、python3 で全量読む
 latest_tag() { curl -fsSL "https://api.github.com/repos/$1/releases/latest" | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"])'; }
 
+# 方針: PATH 上の既存ツール(snap / nvm / distro パッケージ等)は再利用しない。ランナーのジョブ PATH は
+# ~/.local/bin + 標準ディレクトリに固定する(register-runner.sh)ので、/snap/bin 等にあるものは
+# ジョブから見えない。すべて $OPT に入れて $BIN にリンクし、$OPT の有無で冪等判定する
+
 echo "=== gh"
-if ! command -v gh >/dev/null; then
+if [ ! -x "$OPT/gh/bin/gh" ]; then
   v=$(latest_tag cli/cli); v=${v#v}
-  curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz" | tar xz -C "$OPT"
-  ln -sfn "$OPT/gh_${v}_linux_amd64/bin/gh" "$BIN/gh"
+  rm -rf "$OPT/gh"; mkdir -p "$OPT/gh"
+  curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz" | tar xz -C "$OPT/gh" --strip-components=1
 fi
+ln -sfn "$OPT/gh/bin/gh" "$BIN/gh"
 gh --version | head -1
 
 echo "=== git-lfs"
-if ! command -v git-lfs >/dev/null; then
+if [ ! -x "$OPT/git-lfs/git-lfs" ]; then
   v=$(latest_tag git-lfs/git-lfs); v=${v#v}
   mkdir -p "$OPT/git-lfs"
   curl -fsSL "https://github.com/git-lfs/git-lfs/releases/download/v${v}/git-lfs-linux-amd64-v${v}.tar.gz" | tar xz -C "$OPT/git-lfs" --strip-components=1
-  ln -sfn "$OPT/git-lfs/git-lfs" "$BIN/git-lfs"
 fi
+ln -sfn "$OPT/git-lfs/git-lfs" "$BIN/git-lfs"
 git lfs install --skip-repo
 git lfs version
 
 echo "=== pwsh (7.4 LTS)"
-if ! command -v pwsh >/dev/null; then
+if [ ! -x "$OPT/powershell/pwsh" ]; then
   v=$(curl -fsSL "https://api.github.com/repos/PowerShell/PowerShell/releases?per_page=50" | python3 -c 'import sys,json,re;print(next(r["tag_name"][1:] for r in json.load(sys.stdin) if re.fullmatch(r"v7\.4\.\d+", r["tag_name"])))')
   mkdir -p "$OPT/powershell"
   curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${v}/powershell-${v}-linux-x64.tar.gz" | tar xz -C "$OPT/powershell"
   chmod +x "$OPT/powershell/pwsh"
-  ln -sfn "$OPT/powershell/pwsh" "$BIN/pwsh"
 fi
+ln -sfn "$OPT/powershell/pwsh" "$BIN/pwsh"
 pwsh -NoLogo -Command '$PSVersionTable.PSVersion.ToString()'
 
 echo "=== node 22 LTS + corepack/pnpm"
