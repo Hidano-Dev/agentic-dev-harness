@@ -44,13 +44,17 @@ def yaml_name(s: str) -> str:
     return yaml_str(s)
 
 
+SYNC_COMMENTS = {
+    "workflow": ".github/workflows/harness-sync.yml",
+    "template-init": "unity-sdd-template 生成先(orchestration-sync.yml で追従していた旧経路)",
+    "manual": "手動コピー",
+}
+SYNC_LINE_RE = re.compile(r"^(?P<indent>    )sync: (?P<val>[^\s#]+)[^\n]*$", re.M)
+
+
 def render_entry(a: argparse.Namespace) -> str:
     project = yaml_str(a.project) if a.project.strip() else "null"
-    sync_comment = {
-        "workflow": ".github/workflows/harness-sync.yml",
-        "template-init": "unity-sdd-template 生成先(orchestration-sync.yml で追従)",
-        "manual": "手動コピー",
-    }[a.sync]
+    sync_comment = SYNC_COMMENTS[a.sync]
     config_comment = {
         "true": "",
         "pending": "   # 導入 PR マージ後に Registry Update で true にする",
@@ -182,6 +186,15 @@ def cmd_add(a: argparse.Namespace) -> int:
             new_block = render_entry(a).strip("\n") + (trail or "\n")
             path.write_text(text[:s] + new_block + text[e:], encoding="utf-8", newline="\n")
             print(f"registry: '{a.name}' を SDD のみ → linear-worker 付きに更新")
+            return 0
+        # 同期方式が変わった再実行(例: 旧 template-init 経路の取り込み側に harness-sync.yml を
+        # 配置した)なら sync フィールドだけ実態に合わせる。それ以外の値は触らない
+        m = SYNC_LINE_RE.search(block)
+        if m and m.group("val") != a.sync:
+            new_line = f"{m.group('indent')}sync: {a.sync}   # {SYNC_COMMENTS[a.sync]}"
+            block = block[: m.start()] + new_line + block[m.end() :]
+            path.write_text(text[:s] + block + text[e:], encoding="utf-8", newline="\n")
+            print(f"registry: '{a.name}' の sync を {m.group('val')} → {a.sync} に更新")
             return 0
         print(f"registry: '{a.name}' は登録済み(変更なし)")
         return 0

@@ -3,6 +3,50 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-02 — SDD ワークフロー一式を unity-sdd-kit へ移管
+
+本リポジトリの配布物を linear-worker と Git 運用ルールだけにし、SDD ワークフロー一式を
+[unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit)(旧 unity-sdd-template)へ移管した。
+SDD を使わないリポジトリでも linear-worker が動くよう、SDD への参照は「SDD 導入時のみ」の条件付きにした。
+
+**本リポジトリから削除したもの(unity-sdd-kit が配布する)**
+
+- `.claude/commands/kiro/` `.claude/agents/kiro/` `.claude/rules/sdd-workflow.md`
+  `.claude/skills/dev-orchestrator/` `.agents/skills/kiro-*/` `.codex/agents/spec-reviewer.toml`
+  `.kiro/settings/` `AGENTS.md`
+
+**変更したもの**
+
+- `.claude/rules/git-workflow.md`(配布物)— 本リポジトリの入口になった(`CLAUDE.md` から直接 import する)。
+  冒頭に linear-worker への入口(旧 `sdd-workflow.md` の Development Rules にあった 1 行)を移し、
+  dev-orchestrator / `/kiro:*` / spec に関する規定を「SDD 導入時のみ」と明記
+- `.claude/skills/linear-worker/SKILL.md` `templates/routine-prompt.md` `templates/orchestration-config.json`
+  (配布物)— 同上の条件付き表現に調整(ポリシーの中身は変えていない)
+- `templates/consumer/harness-sync.yml` — `SYNC_PATHS` を `.claude/skills/linear-worker .claude/rules/git-workflow.md`
+  に絞った。ディレクトリは配布元に無いファイルを削除して揃える(上書きマージをやめた)。`AGENTS.md` の処理を削除。
+  ルート `CLAUDE.md` に `@.claude/rules/git-workflow.md` が無ければ追記する
+- Onboard Repository(`onboard-repo.yml` / `scripts/onboard/`)— 配布物・import 行を上記に合わせた。
+  `sdd_only` 入力を削除(SDD のみの導入は unity-sdd-kit で行う)。既存の旧 `harness-sync.yml` は配布版に差し替える。
+  unity-sdd-template 生成先の `orchestration-sync.yml` には触れない
+- 本リポジトリの `CLAUDE.md` は `@.claude/rules/git-workflow.md` を import する
+
+**取り込み側で必要な手動追従**
+
+既存の `harness-sync.yml`(旧版)や `orchestration-sync.yml` は削除していないので、すぐに壊れることは無い
+(旧版の同期は残っているファイルを上書きするだけで、SDD 一式は取り込み側に残る)。ただし SDD 一式の更新は
+今後 unity-sdd-kit からしか届かないので、次の手順で移行する:
+
+1. `.github/workflows/harness-sync.yml` を新しい `templates/consumer/harness-sync.yml` に差し替える
+   (unity-sdd-template 生成先で `orchestration-sync.yml` しか無いリポジトリは、harness-sync.yml を新規に置く)
+2. ルート `CLAUDE.md` に `@.claude/rules/git-workflow.md` の行を足す(新しい Harness Sync を実行すれば自動で追記される)。
+   これまで `sdd-workflow.md` が git-workflow.md を import していたが、unity-sdd-kit 版はしないため、
+   この行が無いと Git 運用ルールと linear-worker の入口が読み込まれなくなる
+3. SDD を引き続き使う場合は unity-sdd-kit の同期ワークフロー(SDD Sync)を導入する(手順は unity-sdd-kit の README)。
+   `orchestration-sync.yml` は unity-sdd-kit の同期ワークフローに置き換えて削除してよい。
+   SDD を使わない場合は、SDD 一式(上記の削除パス)を手で削除してよい
+4. `AGENTS.md` は今後 unity-sdd-kit が管理する(旧マーカー `managed-by: agentic-dev-harness` も
+   unity-sdd-kit の同期対象とみなされる)。独自の `AGENTS.md`(マーカー無し)はこれまでどおり上書きされない
+
 ## 2026-10-01 — Harness Sync が config の auto_merge 移行を適用する
 
 - `.claude/skills/linear-worker/scripts/migrate_config.py`(配布物・新設)— 既存の
