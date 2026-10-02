@@ -111,7 +111,7 @@ PR の `config.json` を確認してマージする。規約から変えたい�
   別 Routine でよいが、同一リポジトリに 2 本立てない)
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。
   ラベルは再開したワーカーが外すので手で外さなくてよい(外すと通常の選定対象に戻る)
-- `.claude/` `.github/` `.kiro/settings/` `.kiro/orchestration/` を変える PR は自動マージされない。人間がマージする
+- `.claude/` `.github/` `.kiro/settings/` `.kiro/orchestration/` とルートの `CLAUDE.md` `AGENTS.md` を変える PR は自動マージされない。人間がマージする
 
 ## 手動で行う場合(ワークフローが使えないとき)
 

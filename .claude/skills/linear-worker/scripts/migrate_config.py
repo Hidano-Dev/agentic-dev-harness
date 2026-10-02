@@ -24,6 +24,8 @@ from pathlib import Path
 CONFIG_REL = Path(".kiro/orchestration/config.json")
 # SKILL.md 設定表の既定値。キーが無い config ではワーカーがこれを使う
 DEFAULT_PROTECTED_PATHS = [".claude/", ".github/", ".kiro/settings/"]
+# ワーカーの行動制約を書いたルートの指示ファイル(2026-10-02 に保護対象へ追加)
+ROOT_INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md"]
 
 
 class NotApplicable(Exception):
@@ -50,7 +52,8 @@ def enable_auto_merge(cfg: dict) -> str | None:
     paths = am.get("protected_paths")
     if not isinstance(paths, list):
         raise NotApplicable("auto_merge.protected_paths が配列ではない")
-    missing = [p for p in DEFAULT_PROTECTED_PATHS + [".kiro/orchestration/"] if p not in paths]
+    required = DEFAULT_PROTECTED_PATHS + [".kiro/orchestration/"] + ROOT_INSTRUCTION_FILES
+    missing = [p for p in required if p not in paths]
     if missing:
         raise NotApplicable(f"auto_merge.protected_paths に既定の保護パス {', '.join(missing)} が無い")
     am["enabled"] = True
@@ -72,9 +75,27 @@ def protect_orchestration(cfg: dict) -> str | None:
     return "auto_merge.protected_paths に .kiro/orchestration/ を追加"
 
 
+def protect_root_instructions(cfg: dict) -> str | None:
+    """ルートの CLAUDE.md / AGENTS.md(ワーカーの行動制約)を変える PR が自動マージされないよう、
+    protected_paths に追加する。"""
+    am = _auto_merge(cfg)
+    paths = am.get("protected_paths")
+    if paths is None:
+        paths = list(DEFAULT_PROTECTED_PATHS) + [".kiro/orchestration/"]
+    elif not isinstance(paths, list):
+        raise NotApplicable("auto_merge.protected_paths が配列ではない")
+    added = [p for p in ROOT_INSTRUCTION_FILES if p not in paths]
+    if not added:
+        return None
+    am["protected_paths"] = paths + added
+    return f"auto_merge.protected_paths に {', '.join(added)} を追加"
+
+
 # (ID, 適用関数)。適用順に並べ、ID は変えない。追加したら雛形の applied_migrations にも足す
+# protect_root_instructions は enable_auto_merge より前に置く(有効化の前提条件になっているため)
 MIGRATIONS = [
     ("2026-10-01-protect-orchestration-config", protect_orchestration),
+    ("2026-10-02-protect-root-instructions", protect_root_instructions),
     ("2026-10-01-auto-merge-enabled", enable_auto_merge),
 ]
 
