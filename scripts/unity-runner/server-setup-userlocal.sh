@@ -40,24 +40,25 @@ fi
 pwsh -NoLogo -Command '$PSVersionTable.PSVersion.ToString()'
 
 echo "=== node 22 LTS + corepack/pnpm"
-# 既存の node が別メジャー(distro パッケージ等)だと corepack が無い・CI が想定外の版で動くので、
-# 22 系で corepack も使える場合だけ再利用し、それ以外はユーザーローカルに 22 を入れる
-if ! { command -v node >/dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" = "22" ] && command -v corepack >/dev/null; }; then
+# PATH 上の既存 node(distro パッケージ・nvm 等)は版も置き場所もまちまちで、ランナーのジョブ PATH
+# (~/.local/bin + 標準ディレクトリ)から見えない場合があるため再利用せず、常に $OPT/node の 22 を使う
+if [ ! -x "$OPT/node/bin/node" ]; then
   v=$(curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import sys,json;print(next(r["version"] for r in json.load(sys.stdin) if r["version"].startswith("v22.")))')
   mkdir -p "$OPT/node"
   curl -fsSL "https://nodejs.org/dist/${v}/node-${v}-linux-x64.tar.xz" | tar xJ -C "$OPT/node" --strip-components=1
-  for b in node npm npx corepack; do ln -sfn "$OPT/node/bin/$b" "$BIN/$b"; done
-fi
+  fi
+for b in node npm npx corepack; do ln -sfn "$OPT/node/bin/$b" "$BIN/$b"; done
 node --version
 corepack enable --install-directory "$BIN"
 corepack pnpm --version
 
 echo "=== .NET 8 SDK"
-if ! command -v dotnet >/dev/null; then
+# 同上: 既存の dotnet(ランタイムのみ・別メジャーの SDK)は再利用せず、常に $OPT/dotnet の 8.x SDK を使う
+if ! "$OPT/dotnet/dotnet" --list-sdks 2>/dev/null | grep -q '^8\.'; then
   curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$HOME/ci-setup/dotnet-install.sh"
   bash "$HOME/ci-setup/dotnet-install.sh" --channel 8.0 --install-dir "$OPT/dotnet"
-  ln -sfn "$OPT/dotnet/dotnet" "$BIN/dotnet"
 fi
+ln -sfn "$OPT/dotnet/dotnet" "$BIN/dotnet"
 export DOTNET_ROOT="$OPT/dotnet"
 dotnet --version
 
