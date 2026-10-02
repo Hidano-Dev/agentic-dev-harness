@@ -6,7 +6,8 @@
     "project": null,
     "labels": {
       "needs_human": "needs-human",
-      "needs_local": "needs-local"
+      "needs_local": "needs-local",
+      "needs_unity": "needs-unity"
     }
   },
   "github": {
@@ -14,7 +15,8 @@
     "default_branch": "main"
   },
   "checks": {
-    "fast": []
+    "fast": [],
+    "unity_ci": null
   },
   "review": {
     "bot": {

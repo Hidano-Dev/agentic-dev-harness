@@ -3,6 +3,21 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-03 — needs-unity ラベルとオンプレ Unity CI ランナー
+
+Unity Editor での検証が必要なために止まっていた Issue を自律ワーカーの対象にする。
+オンプレの Ubuntu 機を GitHub Actions のセルフホストランナーにし(`docs/onprem-unity-runner.md`)、
+ワーカーは Unity を起動せずに実装・push し、PR の CI の Unity ジョブを検証証跡にする。
+
+- `.claude/skills/linear-worker/SKILL.md`(配布物)— 設定に `linear.labels.needs_unity`(既定 `needs-unity`)と
+  `checks.unity_ci`(既定 null)を追加。`checks.unity_ci` があるリポジトリでは `needs-unity` の Issue を選定対象に
+  含め(§1)、CI の Unity ジョブで検証する手順(§3)と一次ゲートでの証跡記録(§4 手順 1)を追加。null のリポジトリでは
+  `needs-local` と同じ扱いなので既存の挙動は変わらない(unity-renderer の `needs_local` = `needs-unity` もそのまま)
+- `templates/orchestration-config.json`(配布物)— 上記 2 キーを追加。既存 config への移行は無い
+  (キーが無ければ既定値で動く。Unity CI を使うリポジトリは `checks.unity_ci` を手で入れる)
+- `scripts/unity-runner/` `docs/onprem-unity-runner.md`(配布されない)— ランナーの構築・登録手順を追加
+- 削除・改名したファイルは無い
+
 ## 2026-10-02 — linear-worker の巡回マージ条件の修正と保護パスの追加
 
 - `.claude/skills/linear-worker/SKILL.md` — 「人間の保留が無い」の条件が逆転していたのを修正(未解除・未回答の

@@ -45,8 +45,9 @@
 | 項目 | 規約 |
 |---|---|
 | `linear.project` | リポジトリ名(`owner/name` の `name`)と同名。無ければワークフローが作る |
-| `linear.labels` | `needs-human` / `needs-local`。ラベルを付ける判断はワーカーが行う(着手後に実機が必要と分かった Issue に自分で付けて手放す) |
+| `linear.labels` | `needs-human` / `needs-local` / `needs-unity`。ラベルを付ける判断はワーカーが行う(着手後に実機が必要と分かった Issue に自分で付けて手放す) |
 | `checks.fast` | 空。空ならワーカーが CI 定義・`package.json` 等から lint / typecheck / test 相当を推定して実行する。固定したいコマンドがあれば入れる |
+| `checks.unity_ci` | null。Unity テストをセルフホストランナーの CI で回すリポジトリでは `{"workflow": "ci.yml", "platform": "linux"}` のように入れる(`docs/onprem-unity-runner.md`)。入れると `needs-unity` の Issue がワーカーの対象になる |
 
 ワークフローが行うこと:
 
@@ -96,8 +97,10 @@ PR の `config.json` を確認してマージする。規約から変えたい�
 ## Linear 側の運用メモ
 
 - ラベルの意味: `needs-human` — 人間の判断が必要。自律ワーカーは着手しない /
-  `needs-local`(config で別名にしてもよい)— ローカル環境・実機が必要。自律ワーカーはスキップしてユーザーへ通知する。
-  `LINEAR_API_KEY` を置いていない場合はこの 2 つとリポジトリ名のプロジェクトを手で作る
+  `needs-local`(config で別名にしてもよい)— ローカル環境・実機・人の目が必要。自律ワーカーはスキップしてユーザーへ通知する /
+  `needs-unity` — Unity Editor でのテスト実行が必要。`checks.unity_ci` を設定したリポジトリではワーカーが実装して CI で検証し、
+  未設定のリポジトリでは `needs-local` と同じ扱い(`docs/onprem-unity-runner.md`)。
+  `LINEAR_API_KEY` を置いていない場合はこれらのラベルとリポジトリ名のプロジェクトを手で作る(`needs-unity` は Onboard Repository では作らない)
 - Issue の書き方: タイトルは英語、本文は日本語でよい。1 Issue = 1 PR の粒度にする。
   複数 Issue にまたがる設計(1 つの実装単位が複数要件を跨ぐ)は、ワーカーが `needs-human` を
   付けて質問する。SDD(unity-sdd-kit)導入リポジトリでは、spec(`.kiro/specs/`)由来の作業は
