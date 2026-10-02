@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Unity CI サーバー: sudo 不要のユーザーローカル環境構築(冪等)
 # 対象: gh / git-lfs / pwsh / node+corepack(pnpm) / .NET 8 SDK / actions-runner 本体
+#
+# 冪等判定は ~/.local/opt/<tool> の実行ファイルの有無で行う。ダウンロードや展開が途中で
+# 失敗した場合(set -e で即座に止まる)は、その <tool> のディレクトリが部分的に残って次回
+# 「導入済み」と判定されるので、`rm -rf ~/.local/opt/<tool>` してから再実行する。
 set -euo pipefail
 
 OPT="$HOME/.local/opt"
