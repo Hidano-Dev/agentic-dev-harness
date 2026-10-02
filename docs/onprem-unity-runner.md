@@ -53,7 +53,8 @@ xvfb-run -a unityhub --headless editors --installed
 ### 3. ツール類(sudo 不要)
 
 ```bash
-scp scripts/unity-runner/server-setup-userlocal.sh unity-ci:~/ci-setup/
+ssh unity-ci 'mkdir -p ~/ci-setup'
+scp scripts/unity-runner/server-setup-userlocal.sh scripts/unity-runner/register-runner.sh unity-ci:~/ci-setup/
 ssh unity-ci 'bash ~/ci-setup/server-setup-userlocal.sh'
 ```
 

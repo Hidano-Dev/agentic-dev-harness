@@ -40,7 +40,9 @@ fi
 pwsh -NoLogo -Command '$PSVersionTable.PSVersion.ToString()'
 
 echo "=== node 22 LTS + corepack/pnpm"
-if ! command -v node >/dev/null; then
+# 既存の node が別メジャー(distro パッケージ等)だと corepack が無い・CI が想定外の版で動くので、
+# 22 系で corepack も使える場合だけ再利用し、それ以外はユーザーローカルに 22 を入れる
+if ! { command -v node >/dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" = "22" ] && command -v corepack >/dev/null; }; then
   v=$(curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import sys,json;print(next(r["version"] for r in json.load(sys.stdin) if r["version"].startswith("v22.")))')
   mkdir -p "$OPT/node"
   curl -fsSL "https://nodejs.org/dist/${v}/node-${v}-linux-x64.tar.xz" | tar xJ -C "$OPT/node" --strip-components=1
