@@ -3,6 +3,17 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-02 — linear-worker の巡回マージ条件の修正と保護パスの追加
+
+- `.claude/skills/linear-worker/SKILL.md` — 「人間の保留が無い」の条件が逆転していたのを修正(未解除・未回答の
+  保留が 1 件でも残っていればマージしない)。レビューボットを再トリガーした巡回ではその PR をマージせず、
+  フェイルオープンの待機期限は最後の push と最後の再トリガーの遅い方から数える
+- `auto_merge.protected_paths` の既定にルートの `CLAUDE.md` `AGENTS.md` と `.agents/` `.codex/` を追加(ワーカーの行動制約を書いた
+  ファイルを変える PR を自動マージしない)。既存の config には移行 `2026-10-02-protect-root-instructions` で
+  Harness Sync 実行時に追加される
+- `templates/consumer/harness-sync.yml` — 同期先の途中のディレクトリが submodule(gitlink)の場合も中止する
+- 削除・改名したファイルは無い
+
 ## 2026-10-02 — SDD ワークフロー一式を unity-sdd-kit へ移管
 
 本リポジトリの配布物を linear-worker と Git 運用ルールだけにし、SDD ワークフロー一式を

@@ -57,12 +57,16 @@ jobs:
         run: |
           bad=""
           for p in $SYNC_PATHS CLAUDE.md; do
-            # 途中のディレクトリ(.claude、.claude/skills 等)がリンクでないこと
+            # 途中のディレクトリ(.claude、.claude/skills 等)がリンクでも submodule でもないこと
+            # (祖先が gitlink だと、配下のパスは git ls-files に現れないため個別に見る)
             cur=""
             IFS=/ read -ra parts <<< "$p"
             for part in "${parts[@]}"; do
               cur="${cur:+$cur/}$part"
               if [ -L "$cur" ]; then bad="$bad$cur"$'\n'; break; fi
+              if git ls-files --stage -- "$cur" | awk -v p="$cur" '$1 == "160000" && $4 == p { found = 1 } END { exit !found }'; then
+                bad="$bad$cur (submodule)"$'\n'; break
+              fi
             done
             if [ -d "$p" ] && [ ! -L "$p" ]; then
               found=$(find "$p" -type l -print)

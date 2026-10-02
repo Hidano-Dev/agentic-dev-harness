@@ -32,7 +32,7 @@
   "auto_merge": {
     "enabled": true,
     "method": "merge",
-    "protected_paths": [".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/"],
+    "protected_paths": [".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/", "CLAUDE.md", "AGENTS.md", ".agents/", ".codex/"],
     "merge_parked": true
   },
   "reporting": {
@@ -41,6 +41,7 @@
   },
   "applied_migrations": [
     "2026-10-01-auto-merge-enabled",
-    "2026-10-01-protect-orchestration-config"
+    "2026-10-01-protect-orchestration-config",
+    "2026-10-02-protect-root-instructions"
   ]
 }
