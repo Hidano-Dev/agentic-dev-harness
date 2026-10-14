@@ -136,3 +136,24 @@ repos:
       2026-09-29 に Onboard Repository ワークフローで導入。
       2026-10-03 にオンプレ Unity CI ランナー unity-ci-ubuntu-oscdesk(ラベル linux-unity、Unity 6000.0.36f1)を登録。
       OscSurface の EditMode を回す CI ワークフローと config の checks.unity_ci は別途導入する(docs/onprem-unity-runner.md)。2026-10-02 に SDD を unity-sdd-kit へ移行(oscdesk PR #13)。
+
+  - name: unity-timeline-builder
+    github: Hidano-Dev/unity-timeline-builder
+    role: execution
+    sync: workflow   # .github/workflows/harness-sync.yml
+    harness:
+      config: pending   # 導入 PR マージ後に Registry Update で true にする
+      linear:
+        team: "Hidano"
+        project: "unity-timeline-builder"
+        labels:
+          needs_human: "needs-human"
+          needs_local: "needs-local"
+      routine:
+        name: "自律駆動ハーネス (unity-timeline-builder)"
+        cron: "52 * * * *"   # UTC
+        id: null   # Routine 作成後に Registry Update ワークフローで記入
+        connectors: [Linear]
+      status: pilot
+    notes: >-
+      2026-10-14 に Onboard Repository ワークフローで導入(PR: https://github.com/Hidano-Dev/unity-timeline-builder/pull/12)。
