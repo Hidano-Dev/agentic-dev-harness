@@ -36,6 +36,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `linear.labels.needs_human` | 人間判断待ち。付いた Issue には着手しない | `needs-human` |
 | `linear.labels.needs_local` | ローカル環境・実機・人の目が必要。スキップして実機待ちキューへ | `needs-local` |
 | `linear.labels.needs_unity` | Unity Editor でのテスト実行が必要。`checks.unity_ci` があるリポジトリでは候補に含め、CI の Unity ジョブを検証証跡にする(§3 / §4 手順 1)。無いリポジトリでは `needs_local` と同じ扱い | `needs-unity` |
+| `linear.labels.docs_pending` | 集約型ドキュメントへの反映待ち。ドキュメント反映メモを書いた Issue に付け、リリース用ドキュメント整理で外す(§3) | `docs-pending` |
 | `github.repo` | `owner/name` | 必須 |
 | `github.default_branch` | 作業の起点ブランチ | `main` |
 | `checks.fast` | 一次ゲートでローカル実行するコマンド配列。空ならワーカーがリポジトリから推定する(§4 手順 1) | `[]` |
@@ -44,7 +45,9 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `review.wait_minutes` | 外部レビューの待機期限(分) | 60 |
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
 | `worker.claim_stale_hours` | 放棄 claim とみなす経過時間 | 24 |
-| `worker.backlog_doc` | マージ後に届いた軽微な指摘の記録先 | `docs/backlog.md` |
+| `docs.aggregate_paths` | 集約型ドキュメント(`git-workflow.md` §7)。リリース用 PR 以外では変更しない。`/` で終わる値はディレクトリ接頭辞。空配列なら制限なし | `["README.md", "CHANGELOG.md", "docs/backlog.md"]` |
+| `docs.release_branch_prefix` | このブランチ接頭辞の PR はリリース用 PR として集約型ドキュメントを変更してよい | `release/` |
+| `docs.release_label` | リリース用ドキュメント整理の Issue に付ける Linear ラベルと、そのリリース用 PR に付ける GitHub ラベル(同名) | `release-docs` |
 | `auto_merge.enabled` | 自動マージを許可するか | true(雛形の値。キーが無い場合は false として扱う) |
 | `auto_merge.method` | `merge` / `squash` / `rebase` | `merge` |
 | `auto_merge.protected_paths` | 変更していたら自動マージしないパス接頭辞 | `[".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/", "CLAUDE.md", "AGENTS.md", ".agents/", ".codex/"]` |
@@ -255,7 +258,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
    CI green・コンフリクトなし・レビュー <Completed / 待機期限超過> を確認してマージ
    (マージコミット SHA)」とコメントし、Linear の Done 自動遷移を確認する(失敗して
    いれば手動で Done にする)。`needs-human` は Done の Issue に残っても無害なので
-   外さなくてよい。
+   外さなくてよい。リリース用 PR なら、本文に列挙した Issue から `docs-pending` を外す。
 5. マージはコード変更を伴わないので claim 不要で、成果物にも数えない。続けて次の
    駐機 PR の巡回へ進む。
 
@@ -349,6 +352,14 @@ null のリポジトリの `needs-unity`)でスキップした Issue があれ�
 - **spec 由来のタスク**(`.kiro/specs/<feature>/tasks.md` にある作業): 該当タスクを
   `/kiro:spec-impl` のフローで実装する。タスクの完了チェックと検証証跡の更新を忘れない。
 - **単発の chore / fix / docs**: 通常どおり実装する。
+- **ドキュメントの置き場所**(`git-workflow.md` §7): リリース用ドキュメント整理(下記)以外の
+  Issue では `docs.aggregate_paths` のファイルを変更しない。利用者から見える変化があれば、
+  Issue に `## ドキュメント反映メモ` のコメント(どのファイルに何を書くかの案)を投稿して
+  `docs-pending` ラベルを付け(ラベルがチームに無ければ作る)、PR 本文に要約と Issue への
+  リンクを書く。調査メモ・設計検討・作業ログもリポジトリにファイルとして足さず、Issue の
+  コメントか Linear プロジェクトの Document に書く。Issue 自体が集約型ドキュメントの
+  編集だけを求めている場合(「README に X を追記」等)は、PR を作らずにその内容を
+  ドキュメント反映メモとして記録し、`docs-pending` を付けて Done にする(1 件の実作業に数える)。
 - **`needs-unity` の Issue**(`checks.unity_ci` があるリポジトリ): 実行環境に Unity は無いので、
   コードを直して push し、PR の CI(`checks.unity_ci.workflow`)の Unity ジョブで検証する。
   赤になったら `gh run view <run> --log-failed` と artifact の結果 XML / Unity ログ
@@ -374,6 +385,26 @@ null のリポジトリの `needs-unity`)でスキップした Issue があれ�
   いない claim は §2 の競合検出で「有効な claim」と見なされ、後続セッションが
   永久に撤退し続けるため、解放漏れは禁止(In Progress のまま異常終了した場合の
   救済は §1 の放棄 claim 回収が担う)。
+
+### リリース用ドキュメント整理(2026-10-14 決定)
+
+Linear ラベル `docs.release_label`(既定 `release-docs`)が付いた Issue は、集約型
+ドキュメントをまとめて更新するリリース用の作業として次の手順で進める。
+
+1. 前回までのリリース用 PR(GitHub ラベル `docs.release_label` が付いたマージ済み PR)の本文に
+   「取り込んだ Issue」として列挙された Issue に `docs-pending` が残っていれば外す
+   (前回のマージ後に外し損ねた分。重複して取り込まないため)。
+2. チーム(`linear.project` 設定時はそのプロジェクト)の、状態が Done で `docs-pending` が
+   付いた Issue を集め、それぞれの最新の `## ドキュメント反映メモ` を読む。
+3. メモを整理して `docs.aggregate_paths` のファイルを更新する。メモの羅列ではなく、
+   リリース時点のコードと突き合わせて利用者向けの記述に書き直す(後の Issue で
+   覆された変更は最終形だけを書く)。
+4. PR に GitHub ラベル `docs.release_label` を付ける(リポジトリに無ければ
+   `gh label create <name> --force` で作る)。ラベルが付くまで CI の Docs Policy と
+   §4 手順 1 の検査は失敗するので、PR 作成と同時に付ける。PR 本文に「取り込んだ Issue」として
+   Issue ID を列挙する。
+5. マージを確認したら(§4 末尾、または §1-A 巡回マージの手順 4)、列挙した Issue から
+   `docs-pending` を外す。
 
 ### ユーザー判断待ちの駐機(パーキング、2026-09-24 決定)
 
@@ -446,6 +477,10 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
    Unity のテスト(`-runTests`)は実行環境に Unity が無いので推定対象から外し、
    `checks.unity_ci` があるリポジトリでは手順 4 の CI(Unity ジョブ)の結果と run の URL を
    「Unity テストの検証証跡」として記録する。`needs-unity` の Issue はこの記録が必須。
+   あわせて `python3 .claude/skills/linear-worker/scripts/check_docs_policy.py --base
+   origin/<default_branch> --head-ref <ブランチ名> --labels-json '<PR のラベル名の JSON 配列>'`
+   を実行し、green であること(集約型ドキュメントを変更していない、またはリリース用 PR)。
+   失敗したら集約型ドキュメントの変更を取り消し、内容をドキュメント反映メモへ移す(§3)。
 2. `/code-review`(effort: high)を自分で実行し、CONFIRMED / PLAUSIBLE の全 finding を
    修正または理由付きで棄却として記録する。
 3. spec 由来の実装なら `/kiro:validate-impl` を実行し、指摘ゼロまたは対応済みであること。
@@ -484,7 +519,8 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
    待ちのまま)。
    期限後にボットが遅れて finding を投稿した場合: マージ前ならレビュー対応ループ
    (手順6)で通常どおり扱う。マージ後なら新規の指摘として扱い(該当箇所を直す別
-   PR、または軽微なら `worker.backlog_doc` へ記録)、マージ済み PR を巻き戻さない。
+   PR、または軽微なら優先度 Low の Issue として Backlog に起票し、本文に元の PR と指摘への
+   リンクを書く。`docs/backlog.md` 等のファイルには追記しない — `git-workflow.md` §7)、マージ済み PR を巻き戻さない。
 6. **未解決のレビュースレッドがゼロ**である: 各 finding スレッドに
    (a) 修正 push + コミット SHA を明記した返信、または
    (b) 対応不要の理由を明記した返信、を投稿したうえで
@@ -525,6 +561,7 @@ requirements の人間承認待ち、spec の NO-GO ゲート — は、Issue �
 `MERGED` になったことを確かめてから完了扱い(Done 確認・報告)にする(§1-A 巡回マージの
 手順 3 と同じ)。
 マージ後、Linear の自動遷移(Done)を確認し、失敗していれば手動で Done にする。
+リリース用 PR なら、本文に列挙した Issue から `docs-pending` を外す(§3「リリース用ドキュメント整理」手順 5)。
 
 **自動マージの除外**: PR が `auto_merge.protected_paths`(既定 `.claude/` `.github/`
 `.kiro/settings/` `.kiro/orchestration/` `.agents/` `.codex/` とルートの `CLAUDE.md` `AGENTS.md`)などワーカー自身のポリシー・権限・CI 定義・
