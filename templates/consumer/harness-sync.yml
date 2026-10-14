@@ -17,8 +17,8 @@
 #   (.claude/skills/linear-worker/scripts/migrate_config.py。対象は auto_merge のみ)を
 #   1 度ずつ適用する。適用済みの移行は config の applied_migrations に記録され、
 #   その後に人間が値を戻しても再適用しない
-# - このワークフロー自体(.github/workflows/)は GITHUB_TOKEN では更新できないため同期しない。
-#   配布版と異なる場合は警告するので、templates/consumer/harness-sync.yml で差し替える
+# - このワークフロー自体と docs-policy.yml(.github/workflows/)は GITHUB_TOKEN では更新できない
+#   ため同期しない。無い・配布版と異なる場合は警告するので、templates/consumer/ の配布版で差し替える
 # - 取り込み元が public リポジトリなのでトークン不要。private にする場合は
 #   checkout 用の PAT を secret に置き、clone URL に埋め込む
 #
@@ -98,10 +98,19 @@ jobs:
               cp -f "$src" "$p"
             fi
           done
-          wf=.github/workflows/harness-sync.yml
-          if [ -f "$wf" ] && ! cmp -s /tmp/harness/templates/consumer/harness-sync.yml "$wf"; then
-            echo "::warning::$wf が配布版(${HARNESS_REPO} の templates/consumer/harness-sync.yml)と異なります。独自の変更が無ければ配布版に差し替えてください"
-          fi
+          for name in harness-sync docs-policy; do
+            wf=.github/workflows/$name.yml
+            tpl=/tmp/harness/templates/consumer/$name.yml
+            [ -f "$tpl" ] || continue
+            if [ ! -f "$wf" ]; then
+              # harness-sync.yml は改名して置かれていることがある。docs-policy.yml は Linear 連携
+              # (config.json)がある場合だけ必要
+              [ "$name" = docs-policy ] && [ -f .kiro/orchestration/config.json ] || continue
+              echo "::warning::$wf がありません。配布版(${HARNESS_REPO} の templates/consumer/$name.yml)を置いてください"
+            elif ! cmp -s "$tpl" "$wf"; then
+              echo "::warning::$wf が配布版(${HARNESS_REPO} の templates/consumer/$name.yml)と異なります。独自の変更が無ければ配布版に差し替えてください"
+            fi
+          done
           rm -rf /tmp/harness
 
       # Git 運用ルール(linear-worker の入口を含む)は CLAUDE.md の import 行から読み込まれる。

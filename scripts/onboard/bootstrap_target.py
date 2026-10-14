@@ -11,8 +11,11 @@ Onboard Repository ワークフローが、対象リポジトリを `target/` �
      (旧版は SDD 一式も同期していた)。同名の無関係なファイルなら中止する
    - unity-sdd-template 生成先の orchestration-sync.yml(SDD の旧同期経路)には触れない。
      SDD は unity-sdd-kit の同期ワークフローへ移行する(docs/changelog.md)
-3. ルート CLAUDE.md に `@.claude/rules/git-workflow.md` を保証
-4. `.kiro/orchestration/config.json` を生成(既にあれば触らない)。`linear.project` はリポジトリ名
+3. ドキュメントの置き場所の検査ワークフロー(templates/consumer/docs-policy.yml)を配置
+   - 既に agentic-dev-harness の docs-policy.yml があれば配布版に差し替える。
+     同名の無関係なファイルなら中止する
+4. ルート CLAUDE.md に `@.claude/rules/git-workflow.md` を保証
+5. `.kiro/orchestration/config.json` を生成(既にあれば触らない)。`linear.project` はリポジトリ名
 
 SDD ワークフロー(kiro commands / dev-orchestrator / AGENTS.md 等)は本ハーネスに含まれない。
 必要なら unity-sdd-kit を別途導入する。
@@ -35,6 +38,8 @@ IMPORT_LINE = "@.claude/rules/git-workflow.md"
 ASSET_PATHS = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md"]
 SYNC_TEMPLATE = Path("templates/consumer/harness-sync.yml")
 SYNC_DEST = Path(".github/workflows/harness-sync.yml")
+DOCS_POLICY_TEMPLATE = Path("templates/consumer/docs-policy.yml")
+DOCS_POLICY_DEST = Path(".github/workflows/docs-policy.yml")
 CONFIG_DEST = Path(".kiro/orchestration/config.json")
 
 CLAUDE_MD_NEW = f"""<!--
@@ -107,30 +112,40 @@ def sync_assets(harness: Path, target: Path) -> list[str]:
     return synced
 
 
-def place_sync_workflow(harness: Path, target: Path) -> tuple[str, str]:
-    """戻り値: (sync 方式, 今回の操作)。
+def place_workflow(harness: Path, target: Path, template: Path, dest_rel: Path, marker: str) -> str:
+    """配布するワークフローを配置する。戻り値は今回の操作:
+    written(新規配置) / existing(配布版と同一) / updated(旧版を配布版に差し替え)。
 
-    方式は registry の sync フィールドに対応(常に workflow)。
-    操作は written(新規配置) / existing(配布版と同一) / updated(旧版を配布版に差し替え)。
+    既存ファイルに marker が無ければ同名の無関係なワークフローとみなし、上書きせず中止する。
     """
-    assert_regular_dest(target, SYNC_DEST)
-    dest = target / SYNC_DEST
-    text = (harness / SYNC_TEMPLATE).read_text(encoding="utf-8")
+    assert_regular_dest(target, dest_rel)
+    dest = target / dest_rel
+    text = (harness / template).read_text(encoding="utf-8")
     if dest.exists():
         current = dest.read_text(encoding="utf-8")
-        # 同名の無関係なワークフローを正規の同期経路と誤認して上書きしない
-        if "agentic-dev-harness" not in current:
+        if marker not in current:
             raise RuntimeError(
-                f"{SYNC_DEST} が既に存在するが、agentic-dev-harness の同期ワークフローではない"
-                "(配布元の参照が無い)。退避するか templates/consumer/harness-sync.yml で置き換えてから再実行すること"
+                f"{dest_rel} が既に存在するが、agentic-dev-harness が配布したワークフローではない"
+                f"({marker!r} を含まない)。退避するか {template} で置き換えてから再実行すること"
             )
         if current == text:
-            return "workflow", "existing"
+            return "existing"
         dest.write_text(text, encoding="utf-8", newline="\n")
-        return "workflow", "updated"
+        return "updated"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8", newline="\n")
-    return "workflow", "written"
+    return "written"
+
+
+def place_sync_workflow(harness: Path, target: Path) -> tuple[str, str]:
+    """戻り値: (sync 方式, 今回の操作)。方式は registry の sync フィールドに対応(常に workflow)。"""
+    # 同名の無関係なワークフローを正規の同期経路と誤認して上書きしない
+    return "workflow", place_workflow(harness, target, SYNC_TEMPLATE, SYNC_DEST, "agentic-dev-harness")
+
+
+def place_docs_policy_workflow(harness: Path, target: Path) -> str:
+    """戻り値: 今回の操作(written / existing / updated)。"""
+    return place_workflow(harness, target, DOCS_POLICY_TEMPLATE, DOCS_POLICY_DEST, "check_docs_policy.py")
 
 
 def ensure_claude_md(target: Path) -> str:
@@ -258,12 +273,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         # 書き込み先の事前検査(コピー前に全部見る: 途中で失敗して半端な状態を残さない)
-        for rel in (Path("CLAUDE.md"), CONFIG_DEST, SYNC_DEST):
+        for rel in (Path("CLAUDE.md"), CONFIG_DEST, SYNC_DEST, DOCS_POLICY_DEST):
             assert_regular_dest(target, rel)
         check_existing_config_identity(target, a.repo, a.default_branch)
         result: dict = {}
         result["assets_synced"] = sync_assets(harness, target)
         result["sync_mode"], result["sync_workflow"] = place_sync_workflow(harness, target)
+        result["docs_policy_workflow"] = place_docs_policy_workflow(harness, target)
         result["claude_md"] = ensure_claude_md(target)
         result["config"] = write_config(harness, target, a)
         # 台帳に載せる実値(新規生成でも既存でも config.json から読む)
