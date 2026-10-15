@@ -7,7 +7,8 @@
     "labels": {
       "needs_human": "needs-human",
       "needs_local": "needs-local",
-      "needs_unity": "needs-unity"
+      "needs_unity": "needs-unity",
+      "docs_pending": "docs-pending"
     }
   },
   "github": {
@@ -28,8 +29,12 @@
   },
   "worker": {
     "max_candidates": 5,
-    "claim_stale_hours": 24,
-    "backlog_doc": "docs/backlog.md"
+    "claim_stale_hours": 24
+  },
+  "docs": {
+    "aggregate_paths": ["README.md", "CHANGELOG.md", "docs/backlog.md"],
+    "release_branch_prefix": "release/",
+    "release_label": "release-docs"
   },
   "auto_merge": {
     "enabled": true,

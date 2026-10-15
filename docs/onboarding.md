@@ -53,7 +53,8 @@
 
 1. **Linear**(`LINEAR_API_KEY` がある場合): チーム名の存在を確認し(無ければ候補一覧を出して失敗する。config に誤った名前が入るのを防ぐ)、リポジトリ名と同名のプロジェクトを確認して無ければ作り(同名が別チームにだけある場合は重複を作らず失敗する)、`needs-human` / `needs-local` のラベルを説明文付きで作る(既にあれば何もしない)
 2. **対象リポジトリ**: 配布物(`.claude/skills/linear-worker` `.claude/rules/git-workflow.md`)をコピー、
-   `.github/workflows/harness-sync.yml` を配置(旧版があれば配布版に差し替える)、ルート `CLAUDE.md` に
+   `.github/workflows/harness-sync.yml` と `.github/workflows/docs-policy.yml`(集約型ドキュメントを
+   リリース用 PR 以外で変更していたら失敗させる)を配置(旧版があれば配布版に差し替える)、ルート `CLAUDE.md` に
    `@.claude/rules/git-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
    生成(`auto_merge.enabled` は true)→ `chore: onboard agentic-dev-harness` として PR を作成。
    SDD 一式(`.claude/commands/kiro` 等)・`AGENTS.md`・unity-sdd-template 生成先の
@@ -101,6 +102,12 @@ PR の `config.json` を確認してマージする。規約から変えたい�
   `needs-unity` — Unity Editor でのテスト実行が必要。`checks.unity_ci` を設定したリポジトリではワーカーが実装して CI で検証し、
   未設定のリポジトリでは `needs-local` と同じ扱い(`docs/onprem-unity-runner.md`)。
   `LINEAR_API_KEY` を置いていない場合はこれらのラベルとリポジトリ名のプロジェクトを手で作る(`needs-unity` は Onboard Repository では作らない)
+- ドキュメントの置き場所(`.claude/rules/git-workflow.md` §7): 開発途中の記録(調査メモ・設計検討・
+  後で直す指摘)は Linear の Issue / プロジェクト Document に置き、`README.md` などの集約型ドキュメント
+  (config の `docs.aggregate_paths`)はリリース用 PR だけが更新する。反映すべき内容は Issue の
+  「ドキュメント反映メモ」と `docs-pending` ラベルで溜まるので、リリース時に `release-docs` ラベルを付けた
+  Issue(例: `Release docs for v1.2`)を起票すると、ワーカーがまとめて 1 本の PR にする。
+  `docs-pending` / `release-docs` のラベルが無ければワーカーが作る
 - Issue の書き方: タイトルは英語、本文は日本語でよい。1 Issue = 1 PR の粒度にする。
   複数 Issue にまたがる設計(1 つの実装単位が複数要件を跨ぐ)は、ワーカーが `needs-human` を
   付けて質問する。SDD(unity-sdd-kit)導入リポジトリでは、spec(`.kiro/specs/`)由来の作業は
@@ -120,7 +127,8 @@ PR の `config.json` を確認してマージする。規約から変えたい�
 
 PAT を用意できない等の理由で Onboard Repository を使えない場合は、同じことを手で行う:
 
-1. `templates/consumer/harness-sync.yml` を対象の `.github/workflows/harness-sync.yml` に置き、
+1. `templates/consumer/harness-sync.yml` を対象の `.github/workflows/harness-sync.yml` に、
+   `templates/consumer/docs-policy.yml` を `.github/workflows/docs-policy.yml` に置き、harness-sync を
    Actions から 1 回実行する(配布物のコピーと、ルート `CLAUDE.md` への
    `@.claude/rules/git-workflow.md` の追記まで行われる)
 2. ルート `CLAUDE.md` に `@.claude/rules/git-workflow.md` の行が入ったことを確認する

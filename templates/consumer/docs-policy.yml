@@ -1,0 +1,49 @@
+# =============================================================================
+# ドキュメントの置き場所の検査(取り込み側リポジトリに置く)
+# -----------------------------------------------------------------------------
+# 集約型ドキュメント(config の docs.aggregate_paths。既定 README.md / CHANGELOG.md /
+# docs/backlog.md)を、リリース用 PR 以外で変更していたら失敗させる。
+# 並列に動く PR が同じファイルへ追記してコンフリクトが連鎖するのを防ぐ
+# (.claude/rules/git-workflow.md §7)。
+#
+# - 判定の本体は配布物の .claude/skills/linear-worker/scripts/check_docs_policy.py。
+#   Harness Sync で最新化されるので、このファイル自体は薄く保つ
+# - .kiro/orchestration/config.json が無い(Linear 連携なし)リポジトリでは何もしない
+# - リリース用 PR は、ヘッドブランチが docs.release_branch_prefix(既定 release/)で
+#   始まるか、ラベル docs.release_label(既定 release-docs)が付いているもの。
+#   ラベルの付け外しでも再判定する
+# - このワークフロー(.github/workflows/)は Harness Sync では更新されない。
+#   配布版が変わったら templates/consumer/docs-policy.yml で差し替える
+#
+# 配置先: .github/workflows/docs-policy.yml
+# =============================================================================
+name: Docs Policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  aggregate-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check aggregate docs are only changed in release PRs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          s=.claude/skills/linear-worker/scripts/check_docs_policy.py
+          if [ ! -f "$s" ]; then
+            echo "::notice::$s が無いため検査をスキップしました(Harness Sync で配布物を最新化してください)"
+            exit 0
+          fi
+          python3 "$s" --base "$BASE_SHA" --head "$HEAD_SHA" --head-ref "$HEAD_REF" --labels-json "$LABELS_JSON"

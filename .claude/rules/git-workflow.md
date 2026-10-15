@@ -140,3 +140,38 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   後続の定期実行を塞がないようにするため）。
 - 自動マージ条件を満たせない・判断に迷う場合は、従来どおり PR の URL・
   対応内容の要約を添えてユーザーにマージ判断を仰ぐ。
+
+## 7. ドキュメントの置き場所(2026-10-14 決定)
+
+並列に動く複数の PR が同じドキュメントへ追記すると、マージコンフリクトが連鎖して
+自動進行が止まる。これを防ぐため、**開発途中の記録はリポジトリに書かず Linear に置き、
+集約型ドキュメントはリリース時にまとめて更新する**。
+
+Linear 連携あり(config に `linear.team` がある)のリポジトリにのみ適用する。
+Linear 連携なしのリポジトリでは記録先が無いため、従来どおりリポジトリ内のドキュメントを直接更新してよい。
+
+- **集約型ドキュメント**(config の `docs.aggregate_paths`。既定 `README.md` / `CHANGELOG.md` /
+  `docs/backlog.md`): 多くの PR が同じ箇所へ追記するファイル。**リリース用 PR 以外では
+  変更しない**。リリース用 PR は、ヘッドブランチが `docs.release_branch_prefix`(既定 `release/`)で
+  始まるか、GitHub ラベル `docs.release_label`(既定 `release-docs`)が付いた PR を指す。
+  取り込み側の CI(`templates/consumer/docs-policy.yml`)と linear-worker の一次ゲートが
+  `.claude/skills/linear-worker/scripts/check_docs_policy.py` で検査する。
+- **開発途中の記録は Linear に置く**(リポジトリに新しいファイルとして足さない):
+  - タスク単位の調査メモ・判断ログ・作業の経過 → その Issue の本文とコメント
+  - 複数 Issue にまたがる設計検討 → Linear プロジェクトの Document
+  - 後で直す軽微な指摘(旧 `docs/backlog.md`) → 優先度 Low の Issue として Backlog に起票する
+  - **集約型ドキュメントに反映すべき変更**(利用者から見える機能・設定・手順の変化)→
+    Issue に見出し `## ドキュメント反映メモ` で始まるコメントを投稿し(どのファイルに何を
+    書くか。文面の案でよい)、Linear ラベル `linear.labels.docs_pending`(既定 `docs-pending`)を
+    付ける。PR 本文にはその要約と Issue へのリンクを書く(レビュアーが差分で文面を見られないため)
+- **Notion** は人間が管理する要約(`.claude/skills/linear-worker/SKILL.md` §5)であり、
+  エージェントが開発途中の記録を書く場所にはしない。
+- **リポジトリに残すもの**(この節の制限を受けない): `CLAUDE.md` や `.claude/` などの
+  エージェントへの指示(起動時に自動で読まれる必要がある)、SDD 導入時の `.kiro/specs/` と
+  `.kiro/steering/`(feature 単位に分かれていて検証証跡でもある)、コードと一緒に変わる
+  リファレンス(ソース内のコメント・機能ごとのファイルに分かれた API や設定の説明など)。
+- **リリース時の整理**: リリースのタイミングで、人間が Linear ラベル `docs.release_label` 付きの
+  Issue(例: `Release docs for v1.2`)を起票する。担当者(linear-worker を含む)は、状態が Done で
+  `docs-pending` が付いた Issue のドキュメント反映メモを集めて集約型ドキュメントを 1 本の
+  リリース用 PR で更新し、マージ後に取り込んだ Issue から `docs-pending` を外す
+  (手順の詳細は linear-worker/SKILL.md §3「リリース用ドキュメント整理」)。

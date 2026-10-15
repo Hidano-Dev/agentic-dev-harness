@@ -3,6 +3,31 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-14 — 開発途中のドキュメントを Linear に置き、集約型ドキュメントはリリース時に更新する
+
+並列に動く PR が `README.md` などの同じファイルへ追記してマージコンフリクトが連鎖し、自動進行が
+止まっていた。開発途中の記録はリポジトリに書かずに Linear に置き、集約型ドキュメントは
+リリース用 PR だけがまとめて更新するルールにした(Linear 連携ありのリポジトリのみ)。
+
+- `.claude/rules/git-workflow.md`(配布物)— §7「ドキュメントの置き場所」を追加。集約型ドキュメント
+  (`docs.aggregate_paths`)はリリース用 PR(ブランチ接頭辞 `release/` またはラベル `release-docs`)以外では
+  変更しない。反映すべき内容は Issue の「ドキュメント反映メモ」と `docs-pending` ラベルで Linear に溜め、
+  `release-docs` ラベルの Issue でまとめて反映する
+- `.claude/skills/linear-worker/SKILL.md`(配布物)— 上記に従う手順(§3 のドキュメント反映メモと
+  「リリース用ドキュメント整理」、§4 手順 1 の検査)を追加。マージ後に届いた軽微な指摘は
+  `docs/backlog.md` ではなく優先度 Low の Issue として起票する
+- `.claude/skills/linear-worker/scripts/check_docs_policy.py`(配布物、新規)— 集約型ドキュメントの変更を検査する
+- `templates/orchestration-config.json`(配布物)— `docs`(`aggregate_paths` / `release_branch_prefix` /
+  `release_label`)と `linear.labels.docs_pending` を追加し、`worker.backlog_doc` を削除。既存 config への
+  移行は無い(キーが無ければ既定値で動くので、**同期した時点で既定の集約型ドキュメントが制限対象になる**。
+  対象を変えたいリポジトリは `docs.aggregate_paths` を手で入れ、制限しないなら `[]` にする)。
+  既存 config に残った `worker.backlog_doc` は読まれない
+- `templates/consumer/docs-policy.yml`(配布されない、新規)— 上の検査を PR で回すワークフロー。
+  Onboard Repository が配置する。**導入済みのリポジトリは `.github/workflows/docs-policy.yml` として手で置く**
+  (Harness Sync は `.github/workflows/` を更新できない。無ければ同期時に警告する)
+- 取り込み側で手で行うこと: 既存の `docs/backlog.md` の項目を Linear の Issue へ移す
+- 削除・改名したファイルは無い
+
 ## 2026-10-03 — needs-unity ラベルとオンプレ Unity CI ランナー
 
 Unity Editor での検証が必要なために止まっていた Issue を自律ワーカーの対象にする。

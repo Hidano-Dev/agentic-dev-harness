@@ -31,12 +31,14 @@ Codex skills / `.kiro/settings` / `AGENTS.md`)も配布していたが、2026-10
 │                        linear-worker への入口。CLAUDE.md から @import される
 └─ skills/
     └─ linear-worker/    … Linear 駆動の自律ワーカー(選定・claim・レビューゲート・自動マージ・駐機)
-        ├─ scripts/      … config.json の移行スクリプト(migrate_config.py)
+        ├─ scripts/      … config.json の移行スクリプト(migrate_config.py)と
+        │                   集約型ドキュメントの検査(check_docs_policy.py)
         └─ templates/    … harness 設定の雛形(orchestration-config.json)と Routine プロンプト雛形
 CLAUDE.md               … 本リポジトリ用。取り込み側は自分の CLAUDE.md から @.claude/rules/git-workflow.md を import する
 
 registry/repos.yaml     … 実行リポジトリの台帳(配布されない)
-templates/consumer/     … 取り込み側リポジトリに置く同期ワークフロー(配布されない)
+templates/consumer/     … 取り込み側リポジトリに置くワークフロー(配布されない。同期 harness-sync.yml、
+                          ドキュメントの置き場所の検査 docs-policy.yml)
 scripts/onboard/        … 導入ワークフローが使うスクリプト(配布されない)
 scripts/unity-runner/   … オンプレ Unity CI ランナー(Ubuntu)の構築・登録スクリプト(配布されない。docs/onprem-unity-runner.md)
 docs/                   … 導入手順・運用メモ(配布されない)
