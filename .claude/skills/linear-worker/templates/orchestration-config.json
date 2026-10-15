@@ -23,9 +23,15 @@
     "bot": {
       "name": "codex",
       "summary_marker": "codex-pull-request-review-summary",
-      "retrigger_comment": "@codex review"
+      "request_comment": "@codex review"
     },
     "wait_minutes": 60
+  },
+  "fast_track": {
+    "enabled": true,
+    "text_extensions": [".md", ".markdown", ".rst", ".adoc", ".asciidoc"],
+    "text_exclude_paths": [".kiro/", "Assets/", "Packages/"],
+    "require_ci": true
   },
   "worker": {
     "max_candidates": 5,

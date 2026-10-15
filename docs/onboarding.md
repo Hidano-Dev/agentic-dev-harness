@@ -15,7 +15,8 @@
   ブランチ作成で In Progress、マージで Done へ遷移させる機能)
 - claude.ai の MCP コネクタに Linear が接続済み(Routine から使う)
 - 外部レビューボットを使う場合は、対象リポジトリに GitHub App をインストール済み
-  (例: Codex。`@codex review` で再トリガーできること)
+  (例: Codex。`@codex review` のコメントでレビューを起動できること。ワーカーはレビューが必要な PR に
+  このコメントで自分から依頼するので、ボット側の自動レビュー(push・PR 作成時の自動起動)は無効にしてよい)
 - **本リポジトリの Actions secret**(Settings → Secrets and variables → Actions):
 
   | secret | 用途 | 作り方 |

@@ -3,6 +3,41 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-10-15 — 軽微な変更はレビューなしでマージし、レビューは開発エージェントが自分で依頼する
+
+テキストだけ・コメントだけの PR まで外部レビューを待っていたため、マージまでに数十分〜数時間かかっていた。
+軽微な変更(fast track)はレビューを依頼・待機せず、コンフリクトが無いことを確認できたらマージ判定へ進める。
+逆にレビューが必要な PR は、ボットの自動レビューに頼らず開発エージェントが push のたびに自分で依頼し、
+届くまで監視する(これで外部レビューボット側の自動レビューを切れる)。
+
+- `.claude/skills/linear-worker/scripts/classify_change.py`(配布物、新規)— PR の差分が fast track
+  (テキストのみ・コメントのみ)かを判定する。コメントのみの判定は、変更前後とも変わった行がコードを含まない行
+  (コメントだけの行・空行)であることと、言語ごとの字句解析でコメントを除いたコードが等しいことの両方を見る
+  (対応: C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala / Dart / CSS / Python)。
+  `auto_merge.protected_paths`・未対応の言語・テキスト以外のファイルの追加/削除、`requirements*.txt` `CMakeLists.txt`
+  などの依存・ビルド定義、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md` 等は常にレビュー要。ビルド・lint・静的解析の
+  挙動を変えるコメント(`//go:build` `// ignore:` `# noqa` 等)はコードとして扱う
+- `.claude/rules/git-workflow.md`(配布物)— §4 を「リモートレビュー(依頼と待機)」に改め、fast track
+  (§4-1)と、レビュー要の PR への能動的な依頼と自動監視(§4-2)を追加。§6 に fast track の即時マージ条件を追加
+  (`auto_merge.enabled` が false・config なしのリポジトリでは、レビュー待ちを省いてすぐユーザーにマージ判断を仰ぐ)
+- `.claude/skills/linear-worker/SKILL.md`(配布物)— §4 に「軽微な変更の高速マージ」を追加(fast track の PR は
+  `/code-review` と外部レビューを省き、`checks.fast`・コンフリクトなし・CI green でマージ)。§4 手順5 の
+  「即時再トリガー」を「レビュー依頼」と「自動監視」に改めた。§1-A の巡回でも fast track の PR には
+  レビュー依頼・外部レビューの条件を課さない。fast track の PR は `checks.unity_ci.workflow`(オンプレの
+  セルフホストランナーで走る Unity CI)を実行中・待機中でも待たない(1 台のランナーで直列に走り、オンプレ機が
+  止まっているとジョブが Queued のまま終わらないため。失敗していればマージしない)
+- 取り込み側で確認すること: Unity CI のジョブをブランチ保護の必須チェックにしているリポジトリでは、fast track の
+  PR もその完了までマージできない(ワーカーは保護を回避せず完了待ちとして駐機する)。即マージしたいなら必須チェックから外す
+- `templates/orchestration-config.json`(配布物)— `fast_track`(`enabled` / `text_extensions` /
+  `text_exclude_paths` / `require_ci`)を追加し、`review.bot.retrigger_comment` を `review.bot.request_comment` に
+  改名。既存 config への移行は無い(`fast_track` が無ければ既定値で動き、**同期した時点で fast track が有効になる**。
+  無効にするなら `"fast_track": {"enabled": false}` を手で入れる。`retrigger_comment` は旧キーとしてそのまま読まれる)
+- `templates/routine-prompt.md`(配布物)— fast track とレビュー依頼の 1 段落を追加(既存の Routine のプロンプトは
+  スキル本文を読むので差し替えなくても動く)
+- 取り込み側で手で行うこと: 新しい規則で回り始めたのを確認してから、外部レビューボット側の自動レビュー
+  (Codex なら push・PR 作成時の自動レビュー)を無効にする
+- 削除・改名したファイルは無い
+
 ## 2026-10-14 — 開発途中のドキュメントを Linear に置き、集約型ドキュメントはリリース時に更新する
 
 並列に動く PR が `README.md` などの同じファイルへ追記してマージコンフリクトが連鎖し、自動進行が
