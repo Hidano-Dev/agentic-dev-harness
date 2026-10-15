@@ -225,7 +225,14 @@ class Lexer:
 
     def normalized(self) -> tuple[tuple, set[int]]:
         """(比較用の表現, コードがある行の集合)。"""
-        self.scan(0)
+        start = 0
+        if self.s.startswith("#!"):
+            # 先頭の hashbang はコードとして比較するが、続くヘッダーコメントはまだファイル先頭として扱う
+            start = self.s.find("\n")
+            start = len(self.s) if start < 0 else start
+            self.out.append(self.s[:start])
+            self._code(0, start)
+        self.scan(start)
         code = re.sub(r"[ \t\f\r\v]+", " ", "".join(self.out))
         lines = [ln.strip() for ln in code.split("\n")]
         return ("\n".join(ln for ln in lines if ln), tuple(self.literals)), self.code_lines
