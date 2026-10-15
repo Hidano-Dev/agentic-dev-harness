@@ -31,8 +31,9 @@ Codex skills / `.kiro/settings` / `AGENTS.md`)も配布していたが、2026-10
 │                        linear-worker への入口。CLAUDE.md から @import される
 └─ skills/
     └─ linear-worker/    … Linear 駆動の自律ワーカー(選定・claim・レビューゲート・自動マージ・駐機)
-        ├─ scripts/      … config.json の移行スクリプト(migrate_config.py)と
-        │                   集約型ドキュメントの検査(check_docs_policy.py)
+        ├─ scripts/      … config.json の移行スクリプト(migrate_config.py)、
+        │                   集約型ドキュメントの検査(check_docs_policy.py)、
+        │                   レビュー不要の軽微な変更の判定(classify_change.py)
         └─ templates/    … harness 設定の雛形(orchestration-config.json)と Routine プロンプト雛形
 CLAUDE.md               … 本リポジトリ用。取り込み側は自分の CLAUDE.md から @.claude/rules/git-workflow.md を import する
 

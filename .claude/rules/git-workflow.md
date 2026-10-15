@@ -63,30 +63,60 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   （SDD 導入時の）dev-orchestrator の `--stop-after implementation` のように「PR を作らない」指定がある実行や、
   ユーザーがローカル作業のみを求めている場合は、push / PR 作成を行わず完了報告に留める。
 
-## 4. リモートレビュー待ち
+## 4. リモートレビュー（依頼と待機）
 
 - **dev-orchestrator の除外（SDD 導入時）**: dev-orchestrator（Phase 6）が作成した PR はこの待機ループの
   対象外。同スキルの承認ポリシーどおり PR URL を即時報告して完了とし、PR レビューは人間に
   委ねる（ユーザーまたはワークフロー側で明示的にレビュー待機を指示された場合のみ待機する）。
-- Push 後、数分〜数十分でリモート上のコーディングエージェントによるレビューが PR コメントとして投稿される。
-- レビュー到着は次のいずれかで検知する:
-  - 定期チェック（既定）: `gh pr view <PR> --comments` や
-    `gh api repos/{owner}/{repo}/pulls/<PR>/comments` を 5〜10 分間隔でポーリングする。
-    エージェントセッション中は Monitor / ScheduleWakeup 等の待機機構があればそれを使い、
-    短間隔のビジーポーリングはしない。
-  - フック等の通知機構が設定されている場合はそちらを優先する。
+
+### 4-1. 軽微な変更はレビューを依頼しない（fast track、2026-10-15 決定）
+
+- push したら（PR 作成時を含む）まず差分を判定する:
+  `python3 .claude/skills/linear-worker/scripts/classify_change.py --base origin/<default_branch>`
+  （終了コード 0 = fast track、1 = レビュー要、2 = 判定できない＝レビュー要として扱う）。
+- **fast track** になるのは、差分が次のどちらか（または両方）だけの場合:
+  - **テキストのみ**: ソースコードではない文書（config の `fast_track.text_extensions`。既定 `.md` `.txt` 等）の
+    変更。ただし `fast_track.text_exclude_paths`（既定 `.kiro/` `Assets/` `Packages/`）配下は除く
+  - **コメントのみ**: 対応言語（C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala /
+    Dart / CSS / Python）のソースで、コメントと空白以外が変わっていない（`//go:build` `// @ts-ignore`
+    `# type:` 等のディレクティブ的なコメントはコード扱い。Python の docstring もコード扱い）
+- `auto_merge.protected_paths` のファイル（`CLAUDE.md` や `.claude/` などエージェントへの指示・CI 定義・設定）は、
+  文書であっても挙動を変えるので fast track にならない。判定に迷う変更・未対応の言語も「レビュー要」に倒れる。
+- fast track の PR では、外部レビューの**依頼も待機もしない**。コンフリクトが無いことを確認でき次第 §6 の
+  マージ判断へ進む（CI の扱いは config の `fast_track.require_ci`。既定 true）。
+- config の `fast_track.enabled` が false のリポジトリでは、すべての PR を「レビュー要」として扱う。
+
+### 4-2. レビューが必要な PR は開発エージェントが自分で依頼する
+
+- 外部レビューボットの自動レビュー（push・PR 作成で自動的に始まるもの）には頼らない（ボット側の自動
+  レビューは無効にしてよい）。**レビュー要の push のたびに、push したエージェント自身が PR に
+  レビュー依頼コメント**（config の `review.bot.request_comment`。旧キー `review.bot.retrigger_comment` も
+  同じ意味で読む。例: Codex の `@codex review`）を投稿する。
+  - 依頼の直前に、そのヘッド SHA に対するレビューがすでに開始・完了していれば投稿しない
+    （ボットの自動レビューが残っている間の二重起動を避ける）。
+  - 依頼は 1 ヘッド SHA につき 1 回。下記のスタール時の再依頼 1 回を除き、同じコミットへ重ねて投稿しない。
+  - 前回レビュー済みのコミットからの追加分だけを見て fast track なら（`classify_change.py --base
+    <前回レビューされた SHA>`。文言・コメントの手直しだけの push 等）、再依頼せず前回のレビュー結果を引き継ぐ。
+    デフォルトブランチを取り込んだ push は取り込んだ変更も差分に入るので、通常はレビュー要になる。
+  - config が無いリポジトリでも、外部レビューボットが入っていると分かれば（過去の PR にそのボットの
+    レビューがある等）そのボットの依頼コメント（Codex なら `@codex review`）で同様に依頼・監視する。
+    `review.bot` が null、またはボットが分からなければ依頼先が無いので、PR を作った時点でユーザーへ報告し、
+    レビューは人間に委ねる。
+- **依頼したら、レビュー到着まで自動で監視する**（依頼して終わりにしない）。到着の判定は、現在の
+  ヘッド SHA に対するボットのレビュー（`review.bot.summary_marker` を含む summary コメント、または
+  ボットのレビュー・指摘スレッド）が完了したこと。
+  - 監視の手段: PR のイベント購読（`subscribe_pr_activity` 等）やフック等の通知機構があればそれを優先する。
+    無ければ Monitor / ScheduleWakeup / send_later 等の待機機構で `gh pr view <PR> --comments` や
+    `gh api repos/{owner}/{repo}/pulls/<PR>/comments` を 5〜10 分間隔で確認する（短間隔のビジーポーリングはしない）。
+  - **スタール時の再依頼**: 依頼から 30 分経ってもそのヘッドへのレビューが開始・完了していなければ、
+    **1 回だけ**依頼コメントを再投稿してよい。
 - **待機期限とフォールバック**: レビューエージェントが未設定・停止中・無応答の可能性があるため、
-  待機は無期限にしない。既定の上限は 60 分（config の `review.wait_minutes`。ユーザーが別の
-  期限を指定した場合はそちらを優先）。期限までにレビューが到着しなければ、PR の URL と
+  待機は無期限にしない。既定の上限は 60 分（config の `review.wait_minutes`。現在ヘッドの push と、そのヘッドへの
+  最初の依頼の遅い方から数える。ユーザーが別の期限を指定した場合はそちらを優先）。期限までにレビューが到着しなければ、PR の URL と
   「レビュー未着のため人間のレビューに委ねる」旨を報告してこのループを終了する
   （`PushNotification` 等でユーザーへの通知手段があれば併用する）。
   この期限はスケジュール実行（routine）が単一 PR の待機に無期限に占有され、後続の実行が
-  進まなくなる事態を防ぐためのものでもあり、必ず適用する。
-  - **手動再トリガー**: コメントで再レビューを起動できるボット（config の
-    `review.bot.retrigger_comment`。例: Codex の `@codex review`）を使っている場合、待機期限に
-    達する前に**1 回だけ**そのトリガーコメントを投稿してよい（スタール検知: push から 30 分
-    経っても最新コミットに対するレビューが開始・完了していない場合が目安）。再トリガー後も
-    上記の待機期限は変わらず適用する。
+  進まなくなる事態を防ぐためのものでもあり、必ず適用する（スタール時の再依頼では延長しない）。
 - レビューが来るまでの間、ユーザーから別途指示があればそちらを先に進めてよい。
 - **linear-worker の例外（フェイルオープン、2026-09-24 決定）**: `.claude/skills/
   linear-worker/SKILL.md` §4 の外部レビューゲートに限り、上記の待機期限に達しても「人間の
@@ -131,6 +161,20 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
     記録）、未解決のレビュースレッドがゼロ（各スレッドは修正返信または理由付き
     返信で閉じる。P2 以下の指摘は linear-worker/SKILL.md §4 の重大度ベース処理に
     よる一括棄却コメント + resolve で閉じてよい）
+- **fast track の即時マージ（2026-10-15 決定）**: §4-1 で fast track と判定された PR は、
+  外部レビューと `/code-review` を待たない。
+  - `auto_merge.enabled` が true のリポジトリでは、次を確認でき次第ユーザー承認なしでマージする
+    （`auto_merge.method`、`--match-head-commit <SHA>`、マージ後にブランチ削除。詳細な手順は
+    linear-worker/SKILL.md §4「軽微な変更の高速マージ」）:
+    - マージ直前に取り直した現在ヘッドで `classify_change.py` が fast track
+    - `checks.fast` がローカル green（Linear 連携ありなら `check_docs_policy.py` も green）
+    - **コンフリクトなし**: `gh pr view <PR> --json mergeable` が `MERGEABLE`
+    - CI: config の `fast_track.require_ci` が false でなければ、現在ヘッドで green（CI なしは記録）。
+      false なら CI の完了を待たない（失敗が出ている PR はマージしない。ブランチ保護で必須の
+      チェックがあればその完了は待つ）
+    - 未解決のレビュースレッドがゼロ、人間の保留（`CHANGES_REQUESTED`・「待って」等）が無い、draft でない
+  - `auto_merge.enabled` が false・config が無いリポジトリでは、レビュー待ちを省いて、
+    コンフリクトが無いことを確認したらすぐにユーザーへマージ判断を仰ぐ（下記の例外も従来どおり）。
 - **例外（従来どおりユーザー承認必須）**: config の `auto_merge.protected_paths`（既定
   `.claude/` / `.github/` / `.kiro/settings/` / `.kiro/orchestration/` / `.agents/` / `.codex/` / ルートの `CLAUDE.md` / `AGENTS.md`）等のポリシー・権限・CI 定義・
   orchestration 設定を変更する PR、
