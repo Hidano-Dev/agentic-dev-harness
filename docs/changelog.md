@@ -16,7 +16,7 @@
   (対応: C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala / Dart / CSS / Python)。
   `auto_merge.protected_paths`・未対応の言語・テキスト以外のファイルの追加/削除、`requirements*.txt` `CMakeLists.txt`
   などの依存・ビルド定義、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md` 等は常にレビュー要。ビルド・lint・静的解析の
-  挙動を変えるコメント(`//go:build` `// ignore:` `# noqa` 等)はコードとして扱う
+  挙動を変えるコメント(`//go:build` `// ignore:` `# noqa` 等)と、ファイル先頭でコードより前にあるコメントはコードとして扱う
 - `.claude/rules/git-workflow.md`(配布物)— §4 を「リモートレビュー(依頼と待機)」に改め、fast track
   (§4-1)と、レビュー要の PR への能動的な依頼と自動監視(§4-2)を追加。§6 に fast track の即時マージ条件を追加
   (`auto_merge.enabled` が false・config なしのリポジトリでは、レビュー待ちを省いてすぐユーザーにマージ判断を仰ぐ)

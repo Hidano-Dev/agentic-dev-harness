@@ -19,7 +19,8 @@
   挙動を変えるディレクティブ的なコメント(`//go:build` `// @ts-ignore`
   `// swift-tools-version:` `# type:` `# noqa` 等。`//` の直後が `@` `#` `>` で始まるもの、
   `name:value` / `name=value` 形式で始まるもの、`// ignore:` `// eslint-disable` などの lint・静的解析の
-  抑止も)はコードとして扱う。C 系は行末の
+  抑止も)と、ファイル先頭でコードより前にあるコメント(`# cython:` `//go:build` などファイル単位の
+  指示が置かれる場所)はコードとして扱う。cgo を使い得る Go ファイルはレビュー要。C 系は行末の
   `\\` による行連結(トライグラフ `??/` を含むファイルはレビュー要)、Java は `\\uXXXX` エスケープ(含むファイルはレビュー要)を考慮する
 
 判定は保守側に倒す: 未対応の拡張子・字句解析できないファイル・ファイルの追加/削除
@@ -124,7 +125,7 @@ C_DIRECTIVE = re.compile(
 )
 PY_DIRECTIVE = re.compile(
     r"^#(?:!|.*coding[:=]|\s*[\w.+-]+[:=]\S|\s*(?:type:|noqa|pylint:|mypy:|pyright:|pytype:|fmt:|isort:|"
-    r"pyre-|ruff:|flake8|bandit|coverage:|" + TOOL_DIRECTIVES + r"))",
+    r"pyre-|ruff:|flake8|bandit|coverage:|cython:|distutils:|" + TOOL_DIRECTIVES + r"))",
     re.IGNORECASE,
 )
 JS_REGEX_KEYWORDS = {
@@ -198,20 +199,24 @@ class Lexer:
         self.literals: list[str] = []
         self.starts = [0] + [m.end() for m in re.finditer("\n", src)]
         self.code_lines: set[int] = set()  # コード(リテラル・ディレクティブを含む)がある行
+        self.seen_code = False  # 最初のコード(ヘッダーコメントの終わり)に達したか
 
     # ---- 出力
     def _code(self, i: int, j: int) -> None:
         self.code_lines.update(_lines_of(self.starts, i, j))
 
     def _literal(self, i: int, j: int) -> None:
+        self.seen_code = True
         self.out.append(f"\x00{len(self.literals)}\x00")
         self.literals.append(self.s[i:j])
         self._code(i, j)
 
     def _comment(self, i: int, j: int, body: str) -> None:
         text = self.s[i:j]
-        if C_DIRECTIVE.match(body):
-            self.out.append(text)  # ディレクティブはコードとして比較する
+        # ディレクティブと、ファイル先頭のコードより前のコメント(ファイル単位の指示 —
+        # `//go:build` `// swift-tools-version:` `// @dart=` 等 — が置かれる場所)はコードとして比較する
+        if not self.seen_code or C_DIRECTIVE.match(body):
+            self.out.append(text)
             self._code(i, j)
         else:
             # 改行を含むブロックコメントは改行に、それ以外は空白に置き換える
@@ -265,12 +270,14 @@ class Lexer:
                 if emit:
                     self.out.append(s[i:i + 2])
                     self._code(i, i + 2)
+                    self.seen_code = True
                 i, prev, in_word = i + 2, "\\", False
                 continue
             if emit:
                 self.out.append(c)
                 if not c.isspace():
                     self._code(i, i + 1)
+                    self.seen_code = True
             if c.isspace():
                 in_word = False
             elif _ident(c):
@@ -438,12 +445,13 @@ def python_tokens(src: str) -> tuple[tuple, set[int]]:
     """Python はトークナイザで比較する。docstring は文字列なので変更はコード扱い。"""
     out = []
     code_lines: set[int] = set()
+    seen_code = False  # ファイル先頭のコードより前のコメント(cython: / distutils: / coding 等)はコード扱い
     try:
         for tok in tokenize.generate_tokens(io.StringIO(src).readline):
             if tok.type == tokenize.NL:
                 continue
             if tok.type == tokenize.COMMENT:
-                if PY_DIRECTIVE.match(tok.string):
+                if not seen_code or PY_DIRECTIVE.match(tok.string):
                     out.append((tok.type, tok.string.rstrip()))
                     code_lines.add(tok.start[0])
                 continue
@@ -452,6 +460,7 @@ def python_tokens(src: str) -> tuple[tuple, set[int]]:
                 continue
             out.append((tok.type, tok.string))
             code_lines.update(range(tok.start[0], tok.end[0] + 1))
+            seen_code = True
     except (tokenize.TokenError, IndentationError, SyntaxError) as e:
         raise LexError(f"Python として字句解析できない: {e}") from e
     return tuple(out), code_lines
@@ -469,8 +478,8 @@ def code_signature(path: str, src: str):
     spec = SPECS.get(ext)
     if spec is None:
         return None
-    if ext == ".go" and re.search(r'\bimport\s*(?:\(\s*[^)]*)?"C"', src):
-        raise LexError("cgo のプリアンブル(コメント内の C コード)を含む")
+    if ext == ".go" and re.search(r'["`]C["`]', src):
+        raise LexError("cgo の可能性(import \"C\" の直前のコメントは C コードとしてコンパイルされる)")
     if spec.java_unicode and JAVA_UNICODE_ESCAPE.search(src):
         raise LexError("Unicode エスケープ(\\uXXXX)を含む")
     if spec.splice and re.search(r"[/*]\\\r?\n", src):
