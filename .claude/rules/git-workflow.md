@@ -75,11 +75,14 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   `python3 .claude/skills/linear-worker/scripts/classify_change.py --base origin/<default_branch>`
   （終了コード 0 = fast track、1 = レビュー要、2 = 判定できない＝レビュー要として扱う）。
 - **fast track** になるのは、差分が次のどちらか（または両方）だけの場合:
-  - **テキストのみ**: ソースコードではない文書（config の `fast_track.text_extensions`。既定 `.md` `.txt` 等）の
-    変更。ただし `fast_track.text_exclude_paths`（既定 `.kiro/` `Assets/` `Packages/`）配下は除く
+  - **テキストのみ**: 文書（config の `fast_track.text_extensions`。既定 `.md` `.rst` 等。`.txt` は
+    `requirements.txt` `CMakeLists.txt` のような依存・ビルド定義と区別できないので既定に含めない）の
+    変更。ただし `fast_track.text_exclude_paths`（既定 `.kiro/` `Assets/` `Packages/`）配下と、任意の階層の
+    `CLAUDE.md` `AGENTS.md` `SKILL.md` や `.claude/` `.cursor/` などエージェントへの指示は除く
   - **コメントのみ**: 対応言語（C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala /
-    Dart / CSS / Python）のソースで、コメントと空白以外が変わっていない（`//go:build` `// @ts-ignore`
-    `# type:` 等のディレクティブ的なコメントはコード扱い。Python の docstring もコード扱い）
+    Dart / CSS / Python）のソースで、変更前後とも**コードを含まない行**（コメントだけの行・空行）しか
+    変わっていない（行末コメントの書き換えやコード行の空白の変更はレビュー要。`//go:build` `// @ts-ignore`
+    `// swift-tools-version:` `# type:` 等のディレクティブ的なコメントと Python の docstring はコード扱い）
 - `auto_merge.protected_paths` のファイル（`CLAUDE.md` や `.claude/` などエージェントへの指示・CI 定義・設定）は、
   文書であっても挙動を変えるので fast track にならない。判定に迷う変更・未対応の言語も「レビュー要」に倒れる。
 - fast track の PR では、外部レビューの**依頼も待機もしない**。コンフリクトが無いことを確認でき次第 §6 の

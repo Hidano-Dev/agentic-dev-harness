@@ -11,9 +11,11 @@
 届くまで監視する(これで外部レビューボット側の自動レビューを切れる)。
 
 - `.claude/skills/linear-worker/scripts/classify_change.py`(配布物、新規)— PR の差分が fast track
-  (テキストのみ・コメントのみ)かを判定する。コメントのみの判定は言語ごとの字句解析で、コメントと空白を除いた
-  コードを変更前後で比べる(対応: C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala / Dart /
-  CSS / Python)。`auto_merge.protected_paths`・未対応の言語・テキスト以外のファイルの追加/削除は常にレビュー要
+  (テキストのみ・コメントのみ)かを判定する。コメントのみの判定は、変更前後とも変わった行がコードを含まない行
+  (コメントだけの行・空行)であることと、言語ごとの字句解析でコメントを除いたコードが等しいことの両方を見る
+  (対応: C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala / Dart / CSS / Python)。
+  `auto_merge.protected_paths`・未対応の言語・テキスト以外のファイルの追加/削除、`requirements*.txt` `CMakeLists.txt`
+  などの依存・ビルド定義、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md` 等は常にレビュー要
 - `.claude/rules/git-workflow.md`(配布物)— §4 を「リモートレビュー(依頼と待機)」に改め、fast track
   (§4-1)と、レビュー要の PR への能動的な依頼と自動監視(§4-2)を追加。§6 に fast track の即時マージ条件を追加
   (`auto_merge.enabled` が false・config なしのリポジトリでは、レビュー待ちを省いてすぐユーザーにマージ判断を仰ぐ)

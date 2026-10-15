@@ -44,7 +44,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `review.bot` | 外部レビューボット(`name` / `summary_marker` / `request_comment`)。null なら外部レビューなし。`request_comment` はワーカーが PR に投稿するレビュー依頼コメント(例: `@codex review`。旧キー `retrigger_comment` も同じ意味で読む) | null |
 | `review.wait_minutes` | 外部レビューの待機期限(分) | 60 |
 | `fast_track.enabled` | 軽微な変更(テキストのみ・コメントのみ)の PR をレビュー依頼・待機なしでマージ判定へ進めるか(§4「軽微な変更の高速マージ」)。キーが無ければ true | true |
-| `fast_track.text_extensions` | 「テキストのみ」とみなす文書の拡張子 | `[".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"]` |
+| `fast_track.text_extensions` | 「テキストのみ」とみなす文書の拡張子。`requirements*.txt` `CMakeLists.txt` などの依存・ビルド定義と、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md`・`.claude/` `.cursor/` 等のエージェントへの指示は、ここに含めてもテキスト扱いしない | `[".md", ".markdown", ".rst", ".adoc", ".asciidoc"]` |
 | `fast_track.text_exclude_paths` | テキストでも fast track にしないパス接頭辞(spec 文書・実行時に読まれ得る Unity の TextAsset) | `[".kiro/", "Assets/", "Packages/"]` |
 | `fast_track.require_ci` | fast track の PR も現在ヘッドの CI green を待ってマージするか。false なら CI の完了を待たない(失敗が出ていればマージしない)。どちらの場合も `checks.unity_ci.workflow`(オンプレの Unity CI)は待たない | true |
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
@@ -486,8 +486,9 @@ python3 .claude/skills/linear-worker/scripts/classify_change.py --base origin/<d
 ```
 
 終了コード 0(fast track)になるのは、差分がテキストのみ(`fast_track.text_extensions` の
-文書。`fast_track.text_exclude_paths` 配下を除く)とコメントのみ(対応言語のソースで、
-コメントと空白以外が変わっていない)の組み合わせだけの場合。`auto_merge.protected_paths` の
+文書。`fast_track.text_exclude_paths` 配下と、依存・ビルド定義やエージェントへの指示を除く)と
+コメントのみ(対応言語のソースで、変更前後ともコードを含まない行 — コメントだけの行・空行 — しか
+変わっておらず、コメントを除いたコードも等しい)の組み合わせだけの場合。`auto_merge.protected_paths` の
 ファイル・未対応の言語・ファイルの追加/削除(テキスト以外)・字句解析できないファイルを
 1 つでも含めば 1(レビュー要)、判定できなければ 2(レビュー要として扱う)。
 `fast_track.enabled` が false なら常に 1。判定結果(`verdict:` 行と各ファイルの区分)を

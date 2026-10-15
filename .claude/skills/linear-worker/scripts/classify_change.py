@@ -5,13 +5,21 @@
 差分が次のどちらか(または両方の組み合わせ)だけなら fast track とし、外部レビューの
 依頼・待機を省いてマージ判定へ進める。それ以外はすべて「レビュー要」。
 
-- **テキストのみ**: ソースコードではない文書ファイル(`fast_track.text_extensions`。既定
-  `.md` `.txt` 等)の追加・変更・削除。ただし `fast_track.text_exclude_paths`(既定 `.kiro/`
-  `Assets/` `Packages/` — spec 文書や、実行時に読まれ得る Unity の TextAsset)は除く
-- **コメントのみ**: 対応言語のソースファイルで、コメントと空白(行頭・行末・空行・連続空白)
-  以外が変わっていない変更。コメントを除いて正規化したコード(文字列リテラルは
-  そのまま)を変更前後で比べる。ビルド・lint の挙動を変えるディレクティブ的なコメント
-  (`//go:build` `// @ts-ignore` `# type:` `# noqa` 等)はコードとして扱う
+- **テキストのみ**: 文書ファイル(`fast_track.text_extensions`。既定 `.md` `.rst` 等)の
+  追加・変更・削除。ただし `fast_track.text_exclude_paths`(既定 `.kiro/` `Assets/`
+  `Packages/` — spec 文書や、実行時に読まれ得る Unity の TextAsset)と、拡張子に
+  かかわらず挙動を変えるファイル(`requirements*.txt` `CMakeLists.txt` などの依存・ビルド
+  定義、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md` や `.claude/` `.cursor/` などの
+  エージェントへの指示)は除く
+- **コメントのみ**: 対応言語のソースファイルで、変更前後とも**コードを含まない行**
+  (コメントだけの行・空行)しか変わっておらず、かつコメントを除いて正規化した
+  コード(文字列リテラルはそのまま)が変更前後で等しい変更。行末コメントの書き換えや
+  コード行の空白の変更はレビュー要(字句解析の取りこぼしで行中のコードを
+  コメントと誤認しても、変更行にコードがあればここで落ちるようにする)。ビルド・lint の
+  挙動を変えるディレクティブ的なコメント(`//go:build` `// @ts-ignore`
+  `// swift-tools-version:` `# type:` `# noqa` 等。`//` の直後が `@` `#` `>` で始まるもの、
+  `name:value` / `name=value` 形式で始まるものも)はコードとして扱う。C 系は行末の
+  `\\` による行連結、Java は `\\uXXXX` エスケープ(含むファイルはレビュー要)を考慮する
 
 判定は保守側に倒す: 未対応の拡張子・字句解析できないファイル・ファイルの追加/削除
 (テキスト以外)・モード変更・シンボリックリンク・submodule・`auto_merge.protected_paths`
@@ -28,6 +36,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import io
 import json
 import re
@@ -39,13 +48,21 @@ from pathlib import Path, PurePosixPath
 
 CONFIG_REL = Path(".kiro/orchestration/config.json")
 # SKILL.md 設定表の既定値。キーが無い config ではこれを使う
-DEFAULT_TEXT_EXTENSIONS = [".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"]
+DEFAULT_TEXT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc"]
 DEFAULT_TEXT_EXCLUDE_PATHS = [".kiro/", "Assets/", "Packages/"]
 DEFAULT_PROTECTED_PATHS = [
     ".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/",
     "CLAUDE.md", "AGENTS.md", ".agents/", ".codex/",
 ]
 REGULAR_MODES = {"100644", "100755"}
+# 拡張子が文書でも挙動を変えるファイル(依存・ビルド定義、エージェントへの指示)。設定に
+# かかわらずテキストとして扱わない
+NON_DOC_BASENAME = re.compile(
+    r"^(?:(?:requirements|constraints)[\w.-]*\.(?:txt|in)|cmakelists\.txt|"
+    r"(?:claude|agents|gemini|skill|copilot-instructions)\.md)$",
+    re.IGNORECASE,
+)
+NON_DOC_DIRS = {".claude", ".agents", ".codex", ".cursor", ".windsurf", ".gemini", ".github", ".kiro"}
 
 
 class LexError(Exception):
@@ -88,11 +105,14 @@ def matches(path: str, patterns: list[str]) -> bool:
 # --------------------------------------------------------------------------- 字句解析
 
 # ビルド・lint・型検査の挙動を変えるコメント。変わっていたらコードの変更として扱う
+# 既知のもの(列挙)に加え、未知のツール向けも保守側に倒す: 先頭が @ # > のもの
+# (`// @dart=` `//> using` `//#region` 等)と、`name:value` / `name=value` 形式で始まるもの
+# (`// swift-tools-version:5.9` `//go:embed` 等。`// TODO: x` のようにコロンの後が空白なら対象外)
 C_DIRECTIVE = re.compile(
-    r"^(?:/\s*<(?:reference|amd-)|#\s*source(?:Mapping)?URL|\s*(?:go:|\+build|export\s|line\s|"
-    r"@ts-|@jsx|@flow|eslint|jshint|tslint|biome-ignore|deno-|prettier-ignore|istanbul|c8\s|v8\s|"
-    r"webpack|vite-|[#@]__(?:PURE|NO_SIDE_EFFECTS)__|NOLINT|nolint|clang-format|swiftlint|"
-    r"noinspection|lint:|#?nosec|@formatter|ReSharper|@Suppress|@suppress))",
+    r"^(?:/\s*<(?:reference|amd-)|\s*[@#>]|\s*[\w.+-]+[:=]\S|\s*(?:go:|\+build|export\s|line\s|"
+    r"eslint|jshint|tslint|biome-ignore|deno-|prettier-ignore|istanbul|c8\s|v8\s|"
+    r"webpack|vite-|NOLINT|nolint|clang-format|swiftlint|swift-tools-version|"
+    r"noinspection|lint:|nosec|ReSharper))",
     re.IGNORECASE,
 )
 PY_DIRECTIVE = re.compile(
@@ -126,20 +146,22 @@ class Spec:
     swift_ext: bool = False       # Swift の #"..."#
     csharp: bool = False          # C# の @"..." / $"..." / """..."""
     dart_raw: bool = False        # Dart の r'...'
+    splice: bool = False          # C 系: 行末の \ で次の行と連結する(// コメントも次の行へ続く)
+    java_unicode: bool = False    # Java: \uXXXX はコメント認識より前に展開される
 
 
-C_FAMILY = Spec(cpp_raw=True)
+C_FAMILY = Spec(cpp_raw=True, splice=True)
 SPECS: dict[str, Spec] = {}
 for _ext in (".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".m", ".mm",
              ".shader", ".hlsl", ".cginc", ".compute", ".glsl"):
     SPECS[_ext] = C_FAMILY
 SPECS[".cs"] = Spec(csharp=True)
-SPECS[".java"] = Spec(triple='"')
+SPECS[".java"] = Spec(triple='"', java_unicode=True)
 for _ext in (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"):
     SPECS[_ext] = Spec(single="string", template=True, regex=True)
 SPECS[".go"] = Spec(go_raw=True)
 SPECS[".rs"] = Spec(nested=True, double_newline=True, rust_raw=True)
-SPECS[".swift"] = Spec(nested=True, single=None, interp="\\(", triple='"', swift_ext=True)
+SPECS[".swift"] = Spec(nested=True, single=None, interp="\\(", triple='"', swift_ext=True, regex=True)
 for _ext in (".kt", ".kts"):
     SPECS[_ext] = Spec(nested=True, interp="${", triple='"')
 SPECS[".scala"] = Spec(nested=True, interp="${", triple='"')
@@ -153,6 +175,11 @@ def _ident(ch: str) -> bool:
     return ch.isalnum() or ch in "_$"
 
 
+def _lines_of(starts: list[int], i: int, j: int) -> range:
+    """オフセット [i, j) が掛かる行番号(1 始まり)。"""
+    return range(bisect.bisect_right(starts, i), bisect.bisect_right(starts, max(i, j - 1)) + 1)
+
+
 class Lexer:
     """コメントを取り除き、文字列リテラルを不透明なまま残してコードを正規化する。"""
 
@@ -161,25 +188,34 @@ class Lexer:
         self.spec = spec
         self.out: list[str] = []
         self.literals: list[str] = []
+        self.starts = [0] + [m.end() for m in re.finditer("\n", src)]
+        self.code_lines: set[int] = set()  # コード(リテラル・ディレクティブを含む)がある行
 
     # ---- 出力
-    def _literal(self, text: str) -> None:
-        self.out.append(f"\x00{len(self.literals)}\x00")
-        self.literals.append(text)
+    def _code(self, i: int, j: int) -> None:
+        self.code_lines.update(_lines_of(self.starts, i, j))
 
-    def _comment(self, text: str, body: str) -> None:
+    def _literal(self, i: int, j: int) -> None:
+        self.out.append(f"\x00{len(self.literals)}\x00")
+        self.literals.append(self.s[i:j])
+        self._code(i, j)
+
+    def _comment(self, i: int, j: int, body: str) -> None:
+        text = self.s[i:j]
         if C_DIRECTIVE.match(body):
             self.out.append(text)  # ディレクティブはコードとして比較する
+            self._code(i, j)
         else:
             # 改行を含むブロックコメントは改行に、それ以外は空白に置き換える
             # (`a/**/b` の連結や、JS の自動セミコロン挿入の違いを見逃さないため)
             self.out.append("\n" if "\n" in text else " ")
 
-    def normalized(self) -> tuple[str, tuple[str, ...]]:
+    def normalized(self) -> tuple[tuple, set[int]]:
+        """(比較用の表現, コードがある行の集合)。"""
         self.scan(0)
         code = re.sub(r"[ \t\f\r\v]+", " ", "".join(self.out))
         lines = [ln.strip() for ln in code.split("\n")]
-        return "\n".join(ln for ln in lines if ln), tuple(self.literals)
+        return ("\n".join(ln for ln in lines if ln), tuple(self.literals)), self.code_lines
 
     # ---- 走査
     def scan(self, i: int, stop: str | None = None, emit: bool = True) -> int:
@@ -200,31 +236,33 @@ class Lexer:
                         return i + 1
                     depth -= 1
             if sp.line and s.startswith(sp.line, i):
-                j = s.find("\n", i)
-                j = n if j < 0 else j
+                j = self._line_end(i)
                 if emit:
-                    self._comment(s[i:j], s[i + len(sp.line):j])
+                    self._comment(i, j, s[i + len(sp.line):j])
                 i, in_word = j, False
                 continue
             if sp.block and s.startswith("/*", i):
                 j = self._block_end(i)
                 if emit:
-                    self._comment(s[i:j], s[i + 2:j])
+                    self._comment(i, j, s[i + 2:j])
                 i, in_word = j, False
                 continue
             j = self._literal_end(i, prev, word)
             if j is not None:
                 if emit:
-                    self._literal(s[i:j])
+                    self._literal(i, j)
                 i, prev, in_word = j, "L", False
                 continue
             if c == "\\":
                 if emit:
                     self.out.append(s[i:i + 2])
+                    self._code(i, i + 2)
                 i, prev, in_word = i + 2, "\\", False
                 continue
             if emit:
                 self.out.append(c)
+                if not c.isspace():
+                    self._code(i, i + 1)
             if c.isspace():
                 in_word = False
             elif _ident(c):
@@ -236,6 +274,18 @@ class Lexer:
         if stop is not None:
             raise LexError("文字列内の式埋め込みが閉じていない")
         return i
+
+    def _line_end(self, i: int) -> int:
+        """// コメントの終わり(改行の位置)。C 系は行末の \\ で次の行へ続く。"""
+        s, n = self.s, len(self.s)
+        while True:
+            j = s.find("\n", i)
+            if j < 0:
+                return n
+            if self.spec.splice and s[i:j].rstrip("\r").endswith("\\"):
+                i = j + 1
+                continue
+            return j
 
     def _block_end(self, i: int) -> int:
         s, depth, j = self.s, 1, i + 2
@@ -319,7 +369,7 @@ class Lexer:
                     raise LexError("raw 文字列リテラルが閉じていない")
                 return end + len(close)
         if sp.swift_ext and c == "#":
-            m = re.compile(r'(#+)("""|")').match(s, i)
+            m = re.compile(r'(#+)("""|"|/)').match(s, i)
             if m:
                 close = m.group(2) + m.group(1)
                 end = s.find(close, m.end())
@@ -376,9 +426,10 @@ class Lexer:
         return None
 
 
-def python_tokens(src: str) -> tuple:
+def python_tokens(src: str) -> tuple[tuple, set[int]]:
     """Python はトークナイザで比較する。docstring は文字列なので変更はコード扱い。"""
     out = []
+    code_lines: set[int] = set()
     try:
         for tok in tokenize.generate_tokens(io.StringIO(src).readline):
             if tok.type == tokenize.NL:
@@ -386,18 +437,24 @@ def python_tokens(src: str) -> tuple:
             if tok.type == tokenize.COMMENT:
                 if PY_DIRECTIVE.match(tok.string):
                     out.append((tok.type, tok.string.rstrip()))
+                    code_lines.add(tok.start[0])
                 continue
             if tok.type in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER):
                 out.append((tok.type, ""))
                 continue
             out.append((tok.type, tok.string))
+            code_lines.update(range(tok.start[0], tok.end[0] + 1))
     except (tokenize.TokenError, IndentationError, SyntaxError) as e:
         raise LexError(f"Python として字句解析できない: {e}") from e
-    return tuple(out)
+    return tuple(out), code_lines
+
+
+# Java は \uXXXX(直前の \ の並びが奇数個のもの)をコメントの認識より前に展開する(\u000a が改行になる)
+JAVA_UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\u+[0-9a-fA-F]{4}")
 
 
 def code_signature(path: str, src: str):
-    """コメントと空白を除いたコードの比較用表現。未対応の言語なら None。"""
+    """(コメントと空白を除いたコードの比較用表現, コードがある行の集合)。未対応の言語なら None。"""
     ext = PurePosixPath(path).suffix.lower()
     if ext in PYTHON_EXTS:
         return python_tokens(src)
@@ -406,7 +463,24 @@ def code_signature(path: str, src: str):
         return None
     if ext == ".go" and re.search(r'\bimport\s*(?:\(\s*[^)]*)?"C"', src):
         raise LexError("cgo のプリアンブル(コメント内の C コード)を含む")
+    if spec.java_unicode and JAVA_UNICODE_ESCAPE.search(src):
+        raise LexError("Unicode エスケープ(\\uXXXX)を含む")
+    if spec.splice and re.search(r"[/*]\\\r?\n", src):
+        raise LexError("行連結(\\ + 改行)で // や /* を組み立て得る")
     return Lexer(src, spec).normalized()
+
+
+def changed_lines(old_sha: str, new_sha: str) -> tuple[set[int], set[int]]:
+    """2 つの blob の差分で変わった行番号(変更前, 変更後)。"""
+    out = git("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", old_sha, new_sha)
+    old: set[int] = set()
+    new: set[int] = set()
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", out, re.MULTILINE):
+        a, b = int(m.group(1)), int(m.group(2) or 1)
+        c, d = int(m.group(3)), int(m.group(4) or 1)
+        old.update(range(a, a + b))
+        new.update(range(c, c + d))
+    return old, new
 
 
 # --------------------------------------------------------------------------- 差分
@@ -448,7 +522,10 @@ def classify_file(change, settings) -> tuple[str, str]:
     if status == "M" and old_mode != new_mode:
         return "review", "ファイルモードの変更"
     ext = PurePosixPath(path).suffix.lower()
+    parts = PurePosixPath(path).parts
     if ext in settings["text_extensions"]:
+        if NON_DOC_BASENAME.match(parts[-1]) or NON_DOC_DIRS & set(parts[:-1]):
+            return "review", "依存・ビルド定義またはエージェントへの指示"
         if matches(path, settings["text_exclude_paths"]):
             return "review", "テキストだが除外パス(fast_track.text_exclude_paths)"
         return "text", "テキスト"
@@ -461,9 +538,12 @@ def classify_file(change, settings) -> tuple[str, str]:
         after = code_signature(path, blob_text(new_sha))
     except LexError as e:
         return "review", f"字句解析できない({e})"
-    if before != after:
+    if before[0] != after[0]:
         return "review", "コードの変更"
-    return "comment", "コメント / 空白のみ"
+    old_lines, new_lines = changed_lines(old_sha, new_sha)
+    if old_lines & before[1] or new_lines & after[1]:
+        return "review", "コードを含む行の変更(行末コメント・空白の変更を含む)"
+    return "comment", "コメント行 / 空行のみ"
 
 
 def main(argv: list[str] | None = None) -> int:
