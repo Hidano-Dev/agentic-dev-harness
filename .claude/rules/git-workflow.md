@@ -82,7 +82,8 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
   - **コメントのみ**: 対応言語（C# / C 系・シェーダ / Java / JS・TS / Go / Rust / Swift / Kotlin / Scala /
     Dart / CSS / Python）のソースで、変更前後とも**コードを含まない行**（コメントだけの行・空行）しか
     変わっていない（行末コメントの書き換えやコード行の空白の変更はレビュー要。`//go:build` `// @ts-ignore`
-    `// swift-tools-version:` `# type:` 等のディレクティブ的なコメントと Python の docstring はコード扱い）
+    `// swift-tools-version:` `# type:` 等のディレクティブ的なコメント、`// ignore:` `// eslint-disable` `# noqa` 等の
+    lint・静的解析の抑止コメント、Python の docstring はコード扱い。C 系でトライグラフ `??/` を含むファイルはレビュー要）
 - `auto_merge.protected_paths` のファイル（`CLAUDE.md` や `.claude/` などエージェントへの指示・CI 定義・設定）は、
   文書であっても挙動を変えるので fast track にならない。判定に迷う変更・未対応の言語も「レビュー要」に倒れる。
 - fast track の PR では、外部レビューの**依頼も待機もしない**。コンフリクトが無いことを確認でき次第 §6 の
