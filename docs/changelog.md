@@ -20,7 +20,11 @@
 - `.claude/skills/linear-worker/SKILL.md`(配布物)— §4 に「軽微な変更の高速マージ」を追加(fast track の PR は
   `/code-review` と外部レビューを省き、`checks.fast`・コンフリクトなし・CI green でマージ)。§4 手順5 の
   「即時再トリガー」を「レビュー依頼」と「自動監視」に改めた。§1-A の巡回でも fast track の PR には
-  レビュー依頼・外部レビューの条件を課さない
+  レビュー依頼・外部レビューの条件を課さない。fast track の PR は `checks.unity_ci.workflow`(オンプレの
+  セルフホストランナーで走る Unity CI)を実行中・待機中でも待たない(1 台のランナーで直列に走り、オンプレ機が
+  止まっているとジョブが Queued のまま終わらないため。失敗していればマージしない)
+- 取り込み側で確認すること: Unity CI のジョブをブランチ保護の必須チェックにしているリポジトリでは、fast track の
+  PR もその完了までマージできない(ワーカーは保護を回避せず完了待ちとして駐機する)。即マージしたいなら必須チェックから外す
 - `templates/orchestration-config.json`(配布物)— `fast_track`(`enabled` / `text_extensions` /
   `text_exclude_paths` / `require_ci`)を追加し、`review.bot.retrigger_comment` を `review.bot.request_comment` に
   改名。既存 config への移行は無い(`fast_track` が無ければ既定値で動き、**同期した時点で fast track が有効になる**。

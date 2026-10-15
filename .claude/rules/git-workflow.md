@@ -83,7 +83,8 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
 - `auto_merge.protected_paths` のファイル（`CLAUDE.md` や `.claude/` などエージェントへの指示・CI 定義・設定）は、
   文書であっても挙動を変えるので fast track にならない。判定に迷う変更・未対応の言語も「レビュー要」に倒れる。
 - fast track の PR では、外部レビューの**依頼も待機もしない**。コンフリクトが無いことを確認でき次第 §6 の
-  マージ判断へ進む（CI の扱いは config の `fast_track.require_ci`。既定 true）。
+  マージ判断へ進む（CI の扱いは config の `fast_track.require_ci`。既定 true。オンプレの Unity CI
+  ＝ `checks.unity_ci.workflow` は待たない）。
 - config の `fast_track.enabled` が false のリポジトリでは、すべての PR を「レビュー要」として扱う。
 
 ### 4-2. レビューが必要な PR は開発エージェントが自分で依頼する
@@ -172,6 +173,11 @@ Linear 連携・自動マージなど「リポジトリごとに有無が変わ�
     - CI: config の `fast_track.require_ci` が false でなければ、現在ヘッドで green（CI なしは記録）。
       false なら CI の完了を待たない（失敗が出ている PR はマージしない。ブランチ保護で必須の
       チェックがあればその完了は待つ）
+    - **オンプレの Unity CI は待たない**: config の `checks.unity_ci.workflow`（セルフホストランナーで
+      走る Unity テスト）は、`require_ci` にかかわらず実行中・待機中でも待たない（テキスト・コメントだけの
+      変更では結果が変わらず、オンプレ機が止まっているとジョブが Queued のまま終わらないため）。
+      すでに失敗していればマージしない。ブランチ保護の必須チェックでマージできなければ、保護を回避せず
+      完了待ちとして報告する
     - 未解決のレビュースレッドがゼロ、人間の保留（`CHANGES_REQUESTED`・「待って」等）が無い、draft でない
   - `auto_merge.enabled` が false・config が無いリポジトリでは、レビュー待ちを省いて、
     コンフリクトが無いことを確認したらすぐにユーザーへマージ判断を仰ぐ（下記の例外も従来どおり）。

@@ -46,7 +46,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `fast_track.enabled` | 軽微な変更(テキストのみ・コメントのみ)の PR をレビュー依頼・待機なしでマージ判定へ進めるか(§4「軽微な変更の高速マージ」)。キーが無ければ true | true |
 | `fast_track.text_extensions` | 「テキストのみ」とみなす文書の拡張子 | `[".md", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc"]` |
 | `fast_track.text_exclude_paths` | テキストでも fast track にしないパス接頭辞(spec 文書・実行時に読まれ得る Unity の TextAsset) | `[".kiro/", "Assets/", "Packages/"]` |
-| `fast_track.require_ci` | fast track の PR も現在ヘッドの CI green を待ってマージするか。false なら CI の完了を待たない(失敗が出ていればマージしない) | true |
+| `fast_track.require_ci` | fast track の PR も現在ヘッドの CI green を待ってマージするか。false なら CI の完了を待たない(失敗が出ていればマージしない)。どちらの場合も `checks.unity_ci.workflow`(オンプレの Unity CI)は待たない | true |
 | `worker.max_candidates` | 1 起動あたりの候補試行上限 | 5 |
 | `worker.claim_stale_hours` | 放棄 claim とみなす経過時間 | 24 |
 | `docs.aggregate_paths` | 集約型ドキュメント(`git-workflow.md` §7)。リリース用 PR 以外では変更しない。`/` で終わる値はディレクトリ接頭辞。空配列なら制限なし | `["README.md", "CHANGELOG.md", "docs/backlog.md"]` |
@@ -220,7 +220,9 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
   変える PR は、ワーカーが自分の制約を自分で緩めないよう常に人間がマージする。§4 末尾)
 - PR が draft でない
 - **CI**: 現在ヘッド SHA のチェックがすべて成功(CI なしのリポジトリは「CI なし」と
-  記録)。実行中・失敗・既存の失敗(スコープ外として報告したもの)があればマージしない
+  記録)。実行中・失敗・既存の失敗(スコープ外として報告したもの)があればマージしない。
+  ただし PR 全体が fast track なら、`checks.unity_ci.workflow`(オンプレの Unity CI)は
+  実行中・待機中でも待たない(失敗していればマージしない。§4「軽微な変更の高速マージ」手順 4)
 - **コンフリクトなし**: `mergeable` が `MERGEABLE`。`mergeStateStatus` が `BLOCKED` /
   `BEHIND` 等でブランチ保護によりマージできない場合は、ブランチの更新や保護の回避を
   せず報告に載せる
@@ -501,14 +503,24 @@ fast track の PR は次のとおり進め、外部レビューを待たない:
    `mergeable` が `MERGEABLE`。`UNKNOWN` は少し置いて取り直す。`CONFLICTING` なら
    デフォルトブランチをマージして解消し(rebase しない)、push して判定からやり直す。
 4. CI: `fast_track.require_ci` が false でなければ、現在ヘッドの CI が green になるのを
-   待つ(待機の上限は `review.wait_minutes`。`needs-unity` の Unity ジョブは §3 の上限)。
-   false なら完了を待たないが、失敗が出ていればマージしない。上限までに終わらなければ
-   マージせず、`auto_merge.enabled` に応じて下記 5 の駐機へ回す(§1-A の巡回が後でマージする)。
-   失敗した場合は通常の PR と同じく原因を調べて直す(直した結果コードが変われば、
-   以後は通常のゲートで扱う)。
+   待つ(待機の上限は `review.wait_minutes`)。false なら完了を待たないが、失敗が出ていれば
+   マージしない。上限までに終わらなければマージせず、`auto_merge.enabled` に応じて下記 5 の
+   駐機へ回す(§1-A の巡回が後でマージする)。失敗した場合は通常の PR と同じく原因を調べて
+   直す(直した結果コードが変われば、以後は通常のゲートで扱う)。
+   **オンプレの Unity CI は待たない**(2026-10-15 決定): `checks.unity_ci.workflow` の
+   ワークフロー(セルフホストランナーで走る Unity テスト)は、`require_ci` にかかわらず
+   実行中・待機中(Queued)でも待たずに進む。テキスト・コメントだけの変更では Unity の
+   テスト結果は変わらず(`Assets/` `Packages/` のテキストは fast track にならない)、
+   ランナーは 1 台で直列に走るうえ、オンプレ機が止まっているとジョブが Queued のまま
+   最長 24 時間終わらないため。ただしそのワークフローがすでに失敗していればマージしない
+   (通常どおり原因を見る)。ブランチ保護でそのジョブが必須チェックになっていて
+   マージできない(`mergeStateStatus` が `BLOCKED`)場合は、保護を回避せず(`--admin` を
+   使わない)、`駐機理由: merge-approval` で駐機して「Unity CI が必須チェックのため完了待ち」と
+   報告する(完了後に §1-A の巡回がマージする)。
 5. 手順6(未解決スレッドゼロ)と、人間の保留が無いこと(`reviewDecision` が
    `CHANGES_REQUESTED` でない、PR / Issue に未解除の保留依頼・未回答の質問が無い)を確認し、
-   `auto_merge.enabled` が true なら**マージ直前に判定スクリプト・`mergeable`・CI を取り直して**
+   `auto_merge.enabled` が true なら**マージ直前に判定スクリプト・`mergeable`・CI(手順 4 で
+   待たないオンプレの Unity CI は、失敗していないことだけ)を取り直して**
    から本節末尾の手順でマージする(マージコメントに「fast track: <テキストのみ / コメントのみ>。
    外部レビューなしでマージ」と記録)。`auto_merge.enabled` が false なら
    §3 の駐機手順(`駐機理由: merge-approval`)で駐機する。
