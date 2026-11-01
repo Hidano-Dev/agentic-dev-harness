@@ -171,10 +171,10 @@ develop の作成・既定ブランチの変更・branch protection も行い、
   claim の数と `領域:` の重なりで調整する。手動のクラウドセッション・worktree での並列作業と併用してよい
 - **Release PR**(develop → main)は `promote` が常に 1 本開いておく。本文の先頭にコア・配布物・指示文の
   変更が並ぶので、そこを中心に見て人間がマージする(merge commit。squash しない)
-- 既知の制約: 同一リポジトリのブランチから出た PR のワークフローは secret と書き込み権限を持つため、
-  エージェントが**意図的に**ワークフローを書き換えて必須チェックを偽装することまでは仕組みで防げない
-  (`policy-gate` 自体は `pull_request_target` で base の定義を使うので改変できないが、別のワークフローから
-  同名のチェックを出すことはできる)。`.github/` の変更は `policy-gate` が人間の Approve を求め、Release PR の
+- 既知の制約: `codex-review` と `policy-gate` は `pull_request_target` で base の定義を使い、App の秘密鍵を使う
+  再評価は `workflow_run`(既定ブランチの定義)で行うので、PR がそれらを書き換えて secret を読んだりゲートを
+  外したりはできない。ただし PR が**新しく足した**ワークフローは PR の定義で動くため、エージェントが**意図的に**
+  同名のチェック(`policy-gate` 等)を出して必須チェックを偽装することまでは仕組みで防げない。`.github/` の変更は `policy-gate` が人間の Approve を求め、Release PR の
   先頭にも強調されるので、そこで確認する。より強くしたい場合は CODEOWNERS で `.github/` にコードオーナーの
   レビューを必須にする(配布物のワークフローを更新する同期 PR も人間の承認待ちになる)
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。

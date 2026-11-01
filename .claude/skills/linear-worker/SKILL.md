@@ -48,7 +48,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `review.bot` | `provider: app` のボット(`name` / `login` / `summary_marker` / `request_comment`)。`request_comment` は依頼コメント(例: `@codex review`。旧キー `retrigger_comment` も同じ意味で読む) | null |
 | `review.wait_minutes` | 外部レビューを**セッション内で**待つ上限(分)。過ぎたら待たずに終了してよい(自動マージは予約済み) | 60 |
 | `conflicts.auto_resolve` | `conflict-sweeper` が文書の追記同士の衝突を自動解消するか | true |
-| `conflicts.auto_resolve_extensions` | 自動解消の対象にする拡張子 | `[".md", ".markdown", ".rst", ".adoc", ".asciidoc", ".txt"]` |
+| `conflicts.auto_resolve_extensions` | 自動解消の対象にする拡張子 | `[".md", ".markdown", ".rst", ".adoc", ".asciidoc"]`(`requirements*.txt` `CMakeLists.txt` `CLAUDE.md` `AGENTS.md` `SKILL.md` 等は拡張子にかかわらず対象外) |
 | `conflicts.label` | 自動解消できなかった PR に付くラベル。§1-A の巡回対象 | `needs-conflict-resolution` |
 | `fast_track.enabled` | 軽微な変更(テキストのみ・コメントのみ)の PR をレビュー依頼・待機なしでマージ判定へ進めるか(§4「軽微な変更」)。キーが無ければ true | true |
 | `fast_track.text_extensions` | 「テキストのみ」とみなす文書の拡張子。`requirements*.txt` `CMakeLists.txt` などの依存・ビルド定義と、任意の階層の `CLAUDE.md` `AGENTS.md` `SKILL.md`・`.claude/` `.cursor/` 等のエージェントへの指示は、ここに含めてもテキスト扱いしない | `[".md", ".markdown", ".rst", ".adoc", ".asciidoc"]` |
