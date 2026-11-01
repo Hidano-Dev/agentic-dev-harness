@@ -40,6 +40,8 @@ import urllib.request
 from dataclasses import dataclass, field
 
 HARNESS_CHECKS = ["codex-review", "policy-gate", "aggregate-docs"]
+# GitHub Actions(GitHub App "github-actions")の app_id。Actions のチェックをこの App に限定する
+GITHUB_ACTIONS_APP_ID = 15368
 # ハーネスの必須チェックと、それを出すワークフロー。ワークフローが保護対象ブランチに無いうちは
 # チェックが永遠に来ない(pull_request_target は base にあるワークフローしか動かさない)ので必須にしない
 HARNESS_CHECK_WORKFLOWS = {
@@ -114,15 +116,33 @@ def enabled(d, key: str, default=False) -> bool:
     return default if v is None else bool(v)
 
 
+def actors_to_put(a: dict | None) -> dict | None:
+    """GET の {users: [{login}], teams: [{slug}], apps: [{slug}]} を PUT の {users: [login], ...} にする。"""
+    if not isinstance(a, dict):
+        return None
+    return {"users": sorted(u["login"] for u in a.get("users") or [] if u.get("login")),
+            "teams": sorted(t["slug"] for t in a.get("teams") or [] if t.get("slug")),
+            "apps": sorted(x["slug"] for x in a.get("apps") or [] if x.get("slug"))}
+
+
 def protection_to_put(p: dict | None) -> dict:
-    """GET の branch protection を PUT の形に変換する(無ければ空の保護)。"""
+    """GET の branch protection を PUT の形に変換する(無ければ空の保護)。
+
+    必須チェックは `checks`({context, app_id})で持つ(app_id の指定を落とさない)。
+    PUT で送らない項目は消えるので、GET にある設定はすべて写す。
+    """
     p = p or {}
     rsc = p.get("required_status_checks")
     status = None
     if rsc:
-        contexts = list(rsc.get("contexts") or [])
-        contexts += [c["context"] for c in rsc.get("checks") or [] if c.get("context") not in contexts]
-        status = {"strict": bool(rsc.get("strict")), "contexts": sorted(set(contexts))}
+        checks: dict[str, dict] = {}
+        for c in rsc.get("checks") or []:
+            ctx = c.get("context")
+            if ctx and ctx not in checks:
+                checks[ctx] = {"context": ctx, **({"app_id": c["app_id"]} if c.get("app_id") is not None else {})}
+        for ctx in rsc.get("contexts") or []:
+            checks.setdefault(ctx, {"context": ctx})
+        status = {"strict": bool(rsc.get("strict")), "checks": [checks[k] for k in sorted(checks)]}
     rpr = p.get("required_pull_request_reviews")
     reviews = None
     if rpr:
@@ -132,12 +152,11 @@ def protection_to_put(p: dict | None) -> dict:
             "required_approving_review_count": int(rpr.get("required_approving_review_count") or 0),
             "require_last_push_approval": bool(rpr.get("require_last_push_approval")),
         }
-    r = p.get("restrictions")
-    restrictions = None
-    if r:
-        restrictions = {"users": sorted(u["login"] for u in r.get("users") or []),
-                        "teams": sorted(t["slug"] for t in r.get("teams") or []),
-                        "apps": sorted(a["slug"] for a in r.get("apps") or [])}
+        for key in ("dismissal_restrictions", "bypass_pull_request_allowances"):
+            actors = actors_to_put(rpr.get(key))
+            if actors is not None:
+                reviews[key] = actors
+    restrictions = actors_to_put(p.get("restrictions"))
     return {
         "required_status_checks": status,
         "enforce_admins": enabled(p, "enforce_admins"),
@@ -146,8 +165,30 @@ def protection_to_put(p: dict | None) -> dict:
         "required_linear_history": enabled(p, "required_linear_history"),
         "allow_force_pushes": enabled(p, "allow_force_pushes"),
         "allow_deletions": enabled(p, "allow_deletions"),
+        "block_creations": enabled(p, "block_creations"),
         "required_conversation_resolution": enabled(p, "required_conversation_resolution"),
+        "lock_branch": enabled(p, "lock_branch"),
+        "allow_fork_syncing": enabled(p, "allow_fork_syncing"),
     }
+
+
+def check_names(status: dict | None) -> list[str]:
+    return [c["context"] for c in (status or {}).get("checks") or []]
+
+
+def with_checks(status: dict | None, add_actions: list[str], add_any: list[str] = (),
+                remove: list[str] = (), strict: bool | None = None) -> dict:
+    """必須チェックに名前を足す(既存の app_id 指定は保つ)。add_actions は GitHub Actions の
+    チェックとして app_id を付け、add_any は app を限定しない。"""
+    status = json.loads(json.dumps(status)) if status else {"strict": False, "checks": []}
+    checks = {c["context"]: c for c in status["checks"] if c["context"] not in set(remove)}
+    for name in add_actions:
+        if name not in remove:
+            checks.setdefault(name, {"context": name, "app_id": GITHUB_ACTIONS_APP_ID})
+    for name in add_any:
+        if name not in remove:
+            checks.setdefault(name, {"context": name})
+    return {"strict": status["strict"] if strict is None else strict, "checks": [checks[k] for k in sorted(checks)]}
 
 
 def read_unity_ci_workflow(gh, repo: str, ref: str) -> str | None:
@@ -228,11 +269,9 @@ def build_protection_only_plan(gh, repo: str) -> Plan:
     plan.notes += notes
     cur = protection_to_put(current)
     want = json.loads(json.dumps(cur))
-    rsc = want["required_status_checks"] or {"strict": False, "contexts": []}
-    missing = sorted(set(present) - set(rsc["contexts"]))
+    missing = sorted(set(present) - set(check_names(want["required_status_checks"])))
     if missing:
-        rsc["contexts"] = sorted(set(rsc["contexts"]) | set(missing))
-        want["required_status_checks"] = rsc
+        want["required_status_checks"] = with_checks(want["required_status_checks"], missing)
         plan.actions.append(Action(f"{DEVELOP} の必須チェックに追加: {', '.join(missing)}", "PUT",
                                    f"/repos/{repo}/branches/{DEVELOP}/protection", want))
     return plan
@@ -270,26 +309,27 @@ def build_plan(gh, repo: str, *, create_develop: bool, release_branch: str | Non
                                    "PATCH", f"/repos/{repo}", patch))
 
     # develop の保護
+    explicit: list[str] = list(extra_checks)
     if required_checks is not None:
-        ci = list(required_checks)
+        ci: list[str] = []
+        explicit += list(required_checks)   # 手で指定したチェックは出す App を限定しない
     else:
-        ci, notes = infer_ci_checks(gh, repo, default)
+        ci, notes = infer_ci_checks(gh, repo, default)   # 推定は GitHub Actions のチェックだけ
         plan.notes += notes
     current = get_or_none(gh, f"/repos/{repo}/branches/{DEVELOP}/protection") if develop else None
     cur = protection_to_put(current)
     want = json.loads(json.dumps(cur))
-    contexts = set((cur["required_status_checks"] or {}).get("contexts") or [])
     # develop は無ければ既定ブランチから作るので、ワークフローの有無はその作成元で見る
     present, notes = available_harness_checks(gh, repo, DEVELOP if develop else default)
     plan.notes += notes
-    contexts |= set(present) | set(ci) | set(extra_checks)
-    contexts -= set(exclude_checks)
-    want["required_status_checks"] = {"strict": False, "contexts": sorted(contexts)}
+    want["required_status_checks"] = with_checks(cur["required_status_checks"], present + ci, explicit,
+                                                 remove=list(exclude_checks), strict=False)
+    contexts = check_names(want["required_status_checks"])
     want["required_conversation_resolution"] = True
     want["allow_force_pushes"] = False
     want["allow_deletions"] = False
     if want != cur or current is None:
-        plan.actions.append(Action(f"{DEVELOP} の保護: 必須チェック {', '.join(sorted(contexts))}、"
+        plan.actions.append(Action(f"{DEVELOP} の保護: 必須チェック {', '.join(contexts)}、"
                                    "conversation resolution 必須、force-push / 削除禁止",
                                    "PUT", f"/repos/{repo}/branches/{DEVELOP}/protection", want))
 

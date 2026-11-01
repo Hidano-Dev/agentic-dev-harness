@@ -53,6 +53,7 @@ def commit_all(repo: Path, msg: str = "commit") -> str:
 
 
 HARNESS_FILES = [
+    "CLAUDE.md",  # 配布元自身も不変条件(git-workflow.md の import)を満たす
     "sync-manifest.json",
     ".claude/skills/linear-worker",
     ".claude/rules/git-workflow.md",

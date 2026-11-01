@@ -23,7 +23,10 @@ templates/consumer/policy-gate.yml が base 側のこのスクリプトを呼ぶ
 APPROVED で commit_id が head、user.type が User(Bot でない)、author_association が
 OWNER / MEMBER / COLLABORATOR。CHANGES_REQUESTED が残っていれば承認なし扱い。
 
-配布元(リポジトリ直下に sync-manifest.json がある)では 2・3 を行わず、配布物と
+Release PR(head ブランチ = config の github.default_branch、base ブランチ = github.release_branch。
+--base-ref / --head-ref で渡す)では 2・3 を行わず、コア・配布物に触れていれば 4 と同じく人間の承認を求める。
+
+配布元(base のリポジトリ直下に sync-manifest.json がある)では 2・3 を行わず、配布物と
 sync-manifest.json・scripts/sync/・templates/consumer/ はコアとして人間の承認を求める。
 
 結果は標準出力と $GITHUB_STEP_SUMMARY に出す。終了コード: 0 = 成功、1 = 失敗、2 = 実行エラー。
@@ -54,8 +57,9 @@ MANIFEST_REL = "sync-manifest.json"
 VERIFY_REL = "scripts/sync/verify_harness_sync.py"
 # コア(人間の承認が必須)の既定。config の auto_merge.protected_paths があればそちらを使う
 DEFAULT_CORE = [".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/"]
-# config に関わらず常にコアとして扱う(ゲート自身・同期記録・config を守る)
-FLOOR_CORE = [".github/", ".harness/", ".kiro/orchestration/"]
+# config に関わらず常にコアとして扱う(ゲート自身・同期記録・config を守る)。sync-manifest.json と
+# scripts/sync/ は取り込み側にも置かせない(足すと配布元とみなされ、配布物の保護が外れるため)
+FLOOR_CORE = [".github/", ".harness/", ".kiro/orchestration/", "sync-manifest.json", "scripts/sync/"]
 # 配布元でだけ追加するコア
 DISTRIBUTOR_CORE = [MANIFEST_REL, "scripts/sync/", "templates/consumer/"]
 # `.harness/version` に owned が無いときの配布物(配布元の sync-manifest.json と揃える)
@@ -162,13 +166,18 @@ def check_harness_commit(repo_dir: Path, base: str, head: str, harness: Path, sh
                          harness_repo: str, harness_ref: str) -> str | None:
     """sha が配布元の origin/<harness_ref> に含まれ、base 側の記録から前進していることを確認する。
     問題があればその説明を返す。"""
-    tip = git(harness, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{harness_ref}^{{commit}}",
-              check=False)
-    if tip.returncode != 0:
+    # ref の引き方は verify_harness_sync.check_harness_commit と揃える(テストで一致を確かめている)
+    tip = None
+    for cand in (f"refs/remotes/origin/{harness_ref}", f"refs/heads/{harness_ref}"):
+        r = git(harness, "rev-parse", "--verify", "--quiet", cand + "^{commit}", check=False)
+        if r.returncode == 0:
+            tip = r.stdout.strip()
+            break
+    if tip is None:
         return f"配布元に {harness_ref} ブランチが無い"
     if git(harness, "cat-file", "-e", sha + "^{commit}", check=False).returncode != 0:
         return f"配布元に {sha} が無い"
-    if git(harness, "merge-base", "--is-ancestor", sha, tip.stdout.strip(), check=False).returncode != 0:
+    if git(harness, "merge-base", "--is-ancestor", sha, tip, check=False).returncode != 0:
         return f"{sha} は配布元の {harness_ref} に含まれない(レビュー前のコミットは同期に使えない)"
     mb = git(repo_dir, "merge-base", base, head, check=False)
     prev = load_json(show(repo_dir, mb.stdout.strip(), VERSION_REL)) if mb.returncode == 0 else None
@@ -282,7 +291,9 @@ def core_paths(config) -> list[str]:
 def evaluate(repo_dir: Path, base: str, head: str, *,
              approval_fn: Callable[[], tuple[bool, str]],
              sync_verify_fn: Callable[[], tuple[bool, list[str]]],
-             config_path: Path | None = None) -> Result:
+             config_path: Path | None = None, base_ref: str | None = None,
+             head_ref: str | None = None, head_repo: str | None = None,
+             repo: str | None = None) -> Result:
     repo_dir = Path(repo_dir)
     head = git(repo_dir, "rev-parse", "--verify", head + "^{commit}").stdout.strip()
     base = git(repo_dir, "rev-parse", "--verify", base + "^{commit}").stdout.strip()
@@ -294,6 +305,16 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         # PR 自身が書き換えた config で保護を外せないよう、base 側の config を使う
         config = load_json(show(repo_dir, base, CONFIG_REL))
     core = core_paths(config)
+    gh_cfg = config.get("github") if isinstance(config, dict) and isinstance(config.get("github"), dict) else {}
+    # Release PR(作業ブランチ → リリースブランチの昇格 PR)。同期の変更と通常の変更がまとめて入るので
+    # 同期の判定・配布物の直接編集の失敗は行わず、コア・配布物に触れていれば人間の承認を求める
+    # (どのみち人間がマージする)。ブランチ名は base 側の config とイベントの ref で判定する
+    release_pr = bool(
+        isinstance(gh_cfg.get("release_branch"), str) and gh_cfg.get("release_branch")
+        and isinstance(gh_cfg.get("default_branch"), str) and gh_cfg.get("default_branch")
+        and base_ref == gh_cfg["release_branch"] and head_ref == gh_cfg["default_branch"]
+        and (not head_repo or not repo or head_repo == repo)
+    )
 
     manifest = load_json(show(repo_dir, base, MANIFEST_REL))
     distributor = isinstance(manifest, dict)
@@ -316,7 +337,7 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
 
     # 2. 同期 PR の検証(不変条件より先に行い、検証できたら head の invariants を使う)
     sync_ok, sync_msgs, sync_candidate = False, [], False
-    if not distributor and VERSION_REL in changed:
+    if not distributor and not release_pr and VERSION_REL in changed:
         head_ver = load_json(show(repo_dir, head, VERSION_REL))
         head_owned = head_ver.get("owned") if isinstance(head_ver, dict) and isinstance(head_ver.get("owned"), list) else []
         allowed = owned + [p for p in head_owned if isinstance(p, str)] + SYNC_EXTRA
@@ -357,7 +378,9 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         details += ["同期 PR として検証できなかった: "] + [f"  {m}" for m in sync_msgs]
     # 同期 PR の形(.harness/version と同期の範囲だけを変更)で完全一致を確かめられなかったものは、
     # 人間が確認して承認すれば通す(配布元の不具合・手動同期の救済)。それ以外の配布物の直接編集は失敗
-    if touched_owned and not distributor and not sync_candidate:
+    if release_pr:
+        details.append(f"Release PR({head_ref} → {base_ref}): 同期の判定と配布物の直接編集の検査は行わない")
+    if touched_owned and not distributor and not sync_candidate and not release_pr:
         return Result(False, "配布物(harness owned paths)を直接変更している。配布物は配布元で修正し、"
                              "Harness Sync で取り込むこと。", details + [f"配布物: {f}" for f in touched_owned])
     if touched_core or touched_owned:
@@ -365,9 +388,14 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         hits = sorted(set(touched_core) | set(touched_owned))
         listing = [f"コア: {f}" for f in hits]
         if ok:
+            if release_pr:
+                return Result(True, f"Release PR のコア・配布物の変更に人間の承認がある({why})。", details + listing)
             if sync_candidate:
                 return Result(True, f"同期 PR の完全一致検証は失敗したが、人間の承認がある({why})。", details + listing)
             return Result(True, f"コアパスの変更に人間の承認がある({why})。", details + listing)
+        if release_pr:
+            return Result(False, f"人間の承認待ち: Release PR がコア・配布物を含むため、現在の head に対する人間の承認が必要({why})。",
+                          details + listing)
         if sync_candidate:
             return Result(False, f"人間の承認待ち: 同期 PR の完全一致検証に失敗したため、現在の head に対する人間の承認が必要({why})。",
                           details + listing)
@@ -387,6 +415,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--harness-repo", default=os.environ.get("HARNESS_REPO") or DEFAULT_HARNESS_REPO)
     ap.add_argument("--harness-ref", default=os.environ.get("HARNESS_REF") or DEFAULT_HARNESS_REF)
     ap.add_argument("--harness-url", help="配布元の clone URL(既定: https://github.com/<harness-repo>.git)")
+    ap.add_argument("--base-ref", default="", help="PR の base ブランチ名(Release PR の判定用)")
+    ap.add_argument("--head-ref", default="", help="PR の head ブランチ名(Release PR の判定用)")
+    ap.add_argument("--head-repo", default="", help="PR の head リポジトリ(owner/name。fork の判定用)")
     a = ap.parse_args(argv)
     repo_dir = Path(a.repo_dir).resolve()
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
@@ -404,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
             sync_verify_fn=lambda: verify_sync_with_harness(repo_dir, a.base, a.head_full, a.harness_repo,
                                                             a.harness_ref, a.harness_url),
             config_path=Path(a.config) if a.config else None,
+            base_ref=a.base_ref or None, head_ref=a.head_ref or None,
+            head_repo=a.head_repo or None, repo=a.repo or None,
         )
     except GateError as e:
         print(f"::error::{e}", file=sys.stderr)

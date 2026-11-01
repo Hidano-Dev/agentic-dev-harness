@@ -79,6 +79,30 @@ def is_ancestor(repo: Path, a: str, b: str) -> bool:
     return git(repo, "merge-base", "--is-ancestor", a, b, check=False).returncode == 0
 
 
+def check_harness_commit(repo_dir: Path, base: str, head: str, harness: Path, sha: str,
+                         harness_repo: str, harness_ref: str) -> str | None:
+    """sha が配布元の <harness_ref> に含まれ、merge-base(base, head) の `.harness/version` から
+    前進していることを確認する。問題があればその説明を返す。
+
+    policy_gate.check_harness_commit と同じ判定(policy_gate は取り込み側の配布物として単独で動き、
+    検証前の配布元のコードを import できないので複製している。tests/test_policy_gate.py で一致を確かめる)。
+    """
+    tip = ref_commit(harness, harness_ref)
+    if tip is None:
+        return f"配布元に {harness_ref} ブランチが無い"
+    if git(harness, "cat-file", "-e", sha + "^{commit}", check=False).returncode != 0:
+        return f"配布元に {sha} が無い"
+    if not is_ancestor(harness, sha, tip):
+        return f"{sha} は配布元の {harness_ref} に含まれない(レビュー前のコミットは同期に使えない)"
+    mb = git(repo_dir, "merge-base", base, head, check=False)
+    prev = parse_version(show(repo_dir, mb.stdout.strip(), VERSION_REL)) if mb.returncode == 0 else None
+    if prev and prev.get("repo") == harness_repo and isinstance(prev.get("sha"), str):
+        if git(harness, "cat-file", "-e", prev["sha"] + "^{commit}", check=False).returncode != 0 \
+                or not is_ancestor(harness, prev["sha"], sha):
+            return f"同期前の {prev['sha']} から {sha} への更新ではない(巻き戻し・分岐)"
+    return None
+
+
 def verify(repo_dir: Path, base: str, head: str, harness_repo: str = DEFAULT_HARNESS_REPO,
            harness_ref: str = DEFAULT_REF, harness_dir: Path | None = None,
            harness_url: str | None = None) -> tuple[bool, list[str]]:
@@ -106,18 +130,9 @@ def verify(repo_dir: Path, base: str, head: str, harness_repo: str = DEFAULT_HAR
             harness_dir = tmp_root / "harness"
             clone_harness(harness_url or f"https://github.com/{harness_repo}.git", harness_dir)
         harness_dir = Path(harness_dir).resolve()
-        if git(harness_dir, "cat-file", "-e", sha + "^{commit}", check=False).returncode != 0:
-            return False, [f"配布元に {sha} が無い"]
-        tip = ref_commit(harness_dir, harness_ref)
-        if tip is None:
-            raise VerifyError(f"配布元に {harness_ref} ブランチが無い")
-        if not is_ancestor(harness_dir, sha, tip):
-            return False, [f"{sha} は配布元の {harness_ref} に含まれない(レビュー前のコミットは同期に使えない)"]
-        prev = parse_version(show(repo_dir, mb, VERSION_REL))
-        if prev and prev.get("repo") == harness_repo and isinstance(prev.get("sha"), str):
-            if git(harness_dir, "cat-file", "-e", prev["sha"] + "^{commit}", check=False).returncode != 0 \
-                    or not is_ancestor(harness_dir, prev["sha"], sha):
-                return False, [f"同期前の {prev['sha']} から {sha} への更新ではない(巻き戻し・分岐)"]
+        problem = check_harness_commit(repo_dir, base, head_sha, harness_dir, sha, harness_repo, harness_ref)
+        if problem:
+            return False, [problem]
 
         wt = tmp_root / "worktree"
         git(repo_dir, "worktree", "add", "--quiet", "--detach", str(wt), mb)

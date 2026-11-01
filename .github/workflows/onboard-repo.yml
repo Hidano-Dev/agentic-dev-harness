@@ -164,10 +164,25 @@ jobs:
           python3 scripts/onboard/registry.py --file /tmp/repos-default.yaml check --name "$NAME" --github "$REPO"
 
       # 2 段構成(develop = 作業ブランチ / 変更前の既定ブランチ = リリース)。対象の検証が済んでから行い、
-      # 以降の導入 PR は develop へ出す。App トークンは対象リポジトリだけに絞る
+      # 以降の導入 PR は develop へ出す。App トークンは対象リポジトリだけに絞る。
+      # App の secret が無ければ warning を出して 2 段構成の設定を飛ばす(単一ブランチのまま導入を続ける)
+      - name: Check App secrets for configure_settings
+        id: appcheck
+        if: inputs.configure_settings
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため develop の作成・既定ブランチの変更・branch protection をスキップします(単一ブランチのまま導入を続けます。後で Harness Rollout の configure_settings で設定できます)"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub App token
         id: app
-        if: inputs.configure_settings
+        if: steps.appcheck.outputs.ok == 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.HARNESS_APP_ID }}
@@ -176,7 +191,7 @@ jobs:
           repositories: ${{ steps.target.outputs.name }}
 
       - name: Configure repository (develop, auto-merge, branch protection)
-        if: inputs.configure_settings
+        if: steps.appcheck.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ steps.target.outputs.repo }}

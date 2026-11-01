@@ -11,6 +11,8 @@
 #   3. 同期 PR 以外での配布物(.claude/skills/linear-worker 等)の直接編集は失敗(配布元で直して同期する)
 #   4. コアパス(config の auto_merge.protected_paths)の変更は、現在の head に対する
 #      人間(OWNER / MEMBER / COLLABORATOR)の承認があれば成功
+#   Release PR(head = config の github.default_branch、base = github.release_branch)は 2・3 を
+#   行わず、コア・配布物に触れていれば人間の承認を求める
 #
 # - PR が判定ロジック自体を書き換えて通すのを防ぐため、policy_gate.py は base 側のものを使う
 #   (base にまだ無い導入 PR のときだけ head 側)
@@ -62,6 +64,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          # Release PR(作業ブランチ → リリースブランチ)の判定に使う
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           s=.claude/skills/linear-worker/scripts/policy_gate.py
           gate="$RUNNER_TEMP/policy_gate.py"
@@ -82,4 +87,5 @@ jobs:
           fi
           python3 -I "$gate" --repo-dir . --base "$BASE_SHA" --head "$HEAD_SHA" \
             --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
-            --harness-repo "$HARNESS_REPO" --harness-ref "$HARNESS_REF"
+            --harness-repo "$HARNESS_REPO" --harness-ref "$HARNESS_REF" \
+            --base-ref "$BASE_REF" --head-ref "$HEAD_REF" --head-repo "$HEAD_REPO"
