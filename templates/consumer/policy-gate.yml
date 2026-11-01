@@ -6,14 +6,18 @@
 #
 #   1. 不変条件(.harness/invariants.json): 方針文書から必須の記述が消えていないこと
 #   2. 同期 PR(.harness/version を更新する PR): 配布元の指定コミットを適用した結果と
-#      完全一致すれば成功(人間の承認は不要。誰が作った PR でも内容だけで判定する)
-#   3. 配布物(.claude/skills/linear-worker 等)の直接編集は失敗(配布元で直して同期する)
+#      完全一致すれば成功(人間の承認は不要。誰が作った PR でも内容だけで判定する)。
+#      一致を確かめられなかった同期 PR は人間の承認で通す
+#   3. 同期 PR 以外での配布物(.claude/skills/linear-worker 等)の直接編集は失敗(配布元で直して同期する)
 #   4. コアパス(config の auto_merge.protected_paths)の変更は、現在の head に対する
 #      人間(OWNER / MEMBER / COLLABORATOR)の承認があれば成功
 #
 # - PR が判定ロジック自体を書き換えて通すのを防ぐため、policy_gate.py は base 側のものを使う
 #   (base にまだ無い導入 PR のときだけ head 側)
-# - レビューの提出・取り消しでも再評価する(policy-gate-recheck.yml 経由。承認が付いたら緑になる)
+# - レビューの提出・取り消しでも再評価する(policy-gate-recheck.yml → policy-gate-relabel.yml が
+#   ラベル policy-gate-recheck を付け直す。承認が付いたら緑になる)
+# - このワークフローは base ブランチに存在して初めて動く。導入 PR(このファイルを足す同期 PR)では
+#   動かないので、導入 PR は人間がマージする
 # - 配置先: .github/workflows/policy-gate.yml(Harness Sync が更新する)
 # =============================================================================
 name: Policy Gate

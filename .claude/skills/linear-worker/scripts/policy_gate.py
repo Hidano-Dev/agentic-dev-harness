@@ -10,8 +10,11 @@ templates/consumer/policy-gate.yml が base 側のこのスクリプトを呼ぶ
    人間が承認した PR が invariants.json 自体を変えている場合は head 側)
 2. 同期 PR: `.harness/version` を変更していて、変更が配布物・`.harness/`・ワークフロー・
    CLAUDE.md・config.json に収まり、配布元の verify_harness_sync.py が「指定 sha の適用結果と
-   完全一致」と判定すれば成功(人間の承認は不要)
-3. 取り込み側で配布物(harness owned paths)を直接変更している → 失敗(配布元で直す)
+   完全一致」と判定すれば成功(人間の承認は不要)。検証スクリプトを実行する前に、その sha が
+   配布元の --harness-ref に含まれ、base 側の記録から前進していることをこのスクリプト自身が確かめる。
+   同期 PR の形だが完全一致を確かめられなかったものは 4 と同じく人間の承認で通す
+3. 同期 PR の形でないのに取り込み側で配布物(harness owned paths)を直接変更している →
+   失敗(配布元で直す)
 4. コアパス(config の auto_merge.protected_paths。無ければ既定値)または配布物に触れている →
    現在 head に対する人間の APPROVED review があれば成功、無ければ失敗(人間の承認待ち)
 5. それ以外 → 成功
@@ -155,6 +158,28 @@ def fetch_reviews(repo: str, pr: int, token: str, api: str = "https://api.github
 # ---------------------------------------------------------------- sync verification
 
 
+def check_harness_commit(repo_dir: Path, base: str, head: str, harness: Path, sha: str,
+                         harness_repo: str, harness_ref: str) -> str | None:
+    """sha が配布元の origin/<harness_ref> に含まれ、base 側の記録から前進していることを確認する。
+    問題があればその説明を返す。"""
+    tip = git(harness, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{harness_ref}^{{commit}}",
+              check=False)
+    if tip.returncode != 0:
+        return f"配布元に {harness_ref} ブランチが無い"
+    if git(harness, "cat-file", "-e", sha + "^{commit}", check=False).returncode != 0:
+        return f"配布元に {sha} が無い"
+    if git(harness, "merge-base", "--is-ancestor", sha, tip.stdout.strip(), check=False).returncode != 0:
+        return f"{sha} は配布元の {harness_ref} に含まれない(レビュー前のコミットは同期に使えない)"
+    mb = git(repo_dir, "merge-base", base, head, check=False)
+    prev = load_json(show(repo_dir, mb.stdout.strip(), VERSION_REL)) if mb.returncode == 0 else None
+    if isinstance(prev, dict) and prev.get("repo") == harness_repo and isinstance(prev.get("sha"), str):
+        p = prev["sha"]
+        if git(harness, "cat-file", "-e", p + "^{commit}", check=False).returncode != 0 \
+                or git(harness, "merge-base", "--is-ancestor", p, sha, check=False).returncode != 0:
+            return f"同期前の {p} から {sha} への更新ではない(巻き戻し・分岐)"
+    return None
+
+
 def verify_sync_with_harness(repo_dir: Path, base: str, head: str, harness_repo: str, harness_ref: str,
                              harness_url: str | None = None) -> tuple[bool, list[str]]:
     """head の `.harness/version` が指す配布元を clone し、その verify_harness_sync.py で検証する。"""
@@ -163,6 +188,8 @@ def verify_sync_with_harness(repo_dir: Path, base: str, head: str, harness_repo:
         return False, [f"head の {VERSION_REL} が読めない"]
     if ver.get("repo") != harness_repo:
         return False, [f"{VERSION_REL} の repo が想定外: {ver.get('repo')!r}(想定: {harness_repo!r})"]
+    if ver.get("ref") != harness_ref:
+        return False, [f"{VERSION_REL} の ref が想定外: {ver.get('ref')!r}(想定: {harness_ref!r})"]
     sha = ver.get("sha")
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         return False, [f"{VERSION_REL} の sha が不正: {sha!r}"]
@@ -174,6 +201,11 @@ def verify_sync_with_harness(repo_dir: Path, base: str, head: str, harness_repo:
                            capture_output=True, text=True, encoding="utf-8")
         if r.returncode != 0:
             return False, [f"配布元を clone できない({url}): {r.stderr.strip()}"]
+        # その sha のコード(verify_harness_sync.py)を実行する前に、人間レビュー済みの ref に
+        # 含まれる前進であることをここで確かめる(未レビューのブランチの検証スクリプトで通させない)
+        problem = check_harness_commit(repo_dir, base, head, h, sha, harness_repo, harness_ref)
+        if problem:
+            return False, [problem]
         if git(h, "-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", sha,
                check=False).returncode != 0:
             return False, [f"配布元に {sha} が無い"]
@@ -283,7 +315,7 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         return approval_cache[0]
 
     # 2. 同期 PR の検証(不変条件より先に行い、検証できたら head の invariants を使う)
-    sync_ok, sync_msgs = False, []
+    sync_ok, sync_msgs, sync_candidate = False, [], False
     if not distributor and VERSION_REL in changed:
         head_ver = load_json(show(repo_dir, head, VERSION_REL))
         head_owned = head_ver.get("owned") if isinstance(head_ver, dict) and isinstance(head_ver.get("owned"), list) else []
@@ -292,6 +324,7 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         if outside:
             sync_msgs = ["同期 PR の範囲外の変更がある: " + ", ".join(outside)]
         else:
+            sync_candidate = True
             sync_ok, sync_msgs = sync_verify_fn()
 
     # 1. 不変条件
@@ -322,7 +355,9 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
     touched_core = [f for f in changed if matches(f, core)]
     if sync_msgs:
         details += ["同期 PR として検証できなかった: "] + [f"  {m}" for m in sync_msgs]
-    if touched_owned and not distributor:
+    # 同期 PR の形(.harness/version と同期の範囲だけを変更)で完全一致を確かめられなかったものは、
+    # 人間が確認して承認すれば通す(配布元の不具合・手動同期の救済)。それ以外の配布物の直接編集は失敗
+    if touched_owned and not distributor and not sync_candidate:
         return Result(False, "配布物(harness owned paths)を直接変更している。配布物は配布元で修正し、"
                              "Harness Sync で取り込むこと。", details + [f"配布物: {f}" for f in touched_owned])
     if touched_core or touched_owned:
@@ -330,7 +365,12 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         hits = sorted(set(touched_core) | set(touched_owned))
         listing = [f"コア: {f}" for f in hits]
         if ok:
+            if sync_candidate:
+                return Result(True, f"同期 PR の完全一致検証は失敗したが、人間の承認がある({why})。", details + listing)
             return Result(True, f"コアパスの変更に人間の承認がある({why})。", details + listing)
+        if sync_candidate:
+            return Result(False, f"人間の承認待ち: 同期 PR の完全一致検証に失敗したため、現在の head に対する人間の承認が必要({why})。",
+                          details + listing)
         return Result(False, f"人間の承認待ち: コアパスを変更しているため、現在の head に対する人間の承認が必要({why})。",
                       details + listing)
     return Result(True, "コアパス・配布物の変更なし。", details)

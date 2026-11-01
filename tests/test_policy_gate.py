@@ -208,12 +208,31 @@ class EvaluateTest(unittest.TestCase):
         self.assertEqual(self.approvals, 0)
         self.assertEqual(self.verifies, 1)
 
-    def test_unverified_sync_pr_fails(self):
+    def test_unverified_sync_pr_needs_human_approval(self):
         self.branch("chore/harness-sync-x")
         write(self.repo / ".harness/version", "{}\n")
-        write(self.repo / ".claude/rules/git-workflow.md", "new rules\n")
-        r = self.evaluate(commit_all(self.repo), approved=True, sync_result=(False, ["不一致"]))
+        f = self.repo / ".claude/rules/git-workflow.md"
+        write(f, f.read_text(encoding="utf-8") + "\nnew rules\n")
+        head = commit_all(self.repo)
+        r = self.evaluate(head, sync_result=(False, ["不一致の理由"]))
         self.assertFalse(r.ok)
+        self.assertIn("人間の承認待ち", r.reason)
+        self.assertIn("完全一致検証に失敗", r.reason)
+        self.assertTrue(any("不一致の理由" in d for d in r.details), r.details)
+        r = self.evaluate(head, approved=True, sync_result=(False, ["不一致の理由"]))
+        self.assertTrue(r.ok, r.reason)
+        self.assertIn("検証は失敗したが", r.reason)
+
+    def test_owned_edit_with_extra_paths_is_not_rescued_by_approval(self):
+        # .harness/version を触っていても同期の範囲外の変更があれば同期 PR の形ではない → 配布物の直接編集
+        self.branch("chore/fake-sync")
+        write(self.repo / ".harness/version", "{}\n")
+        f = self.repo / ".claude/rules/git-workflow.md"
+        write(f, f.read_text(encoding="utf-8") + "\nx\n")
+        write(self.repo / "src/app.py", "evil\n")
+        r = self.evaluate(commit_all(self.repo), approved=True, sync_result=(True, []))
+        self.assertFalse(r.ok)
+        self.assertIn("配布物", r.reason)
 
     def test_sync_pr_outside_allowed_paths_is_not_verified(self):
         self.branch("chore/harness-sync-x")
@@ -285,6 +304,48 @@ class SyncVerificationIntegrationTest(unittest.TestCase):
         head2 = commit_all(self.repo, "tamper")
         code, out = self.run_gate(head2)
         self.assertEqual(code, 1, out)
+        self.assertIn("人間の承認待ち", out)
+
+    def test_unreviewed_harness_verifier_is_never_executed(self):
+        # 配布元の未レビューのブランチに「常に成功する」検証スクリプトを置き、その sha を同期 PR に指定する
+        marker = self.tmp / "verifier-was-executed"
+        git(self.harness, "checkout", "-q", "-b", "evil")
+        write(self.harness / "scripts/sync/verify_harness_sync.py",
+              f"from pathlib import Path\nPath({str(marker)!r}).write_text('x')\nraise SystemExit(0)\n")
+        evil = commit_all(self.harness, "evil verifier")
+        git(self.harness, "checkout", "-q", "main")
+        git(self.repo, "checkout", "-q", "-b", "chore/harness-sync-evil", self.base)
+        with redirect_stderr(io.StringIO()):
+            apply_sync.apply_sync(self.harness, self.repo, evil, HARNESS_REPO, "main")
+        head = commit_all(self.repo, "sync evil")
+        code, out = self.run_gate(head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("含まれない", out)
+        self.assertFalse(marker.exists())
+
+    def test_downgrade_is_rejected_before_running_verifier(self):
+        write(self.harness / ".claude/rules/git-workflow.md",
+              (self.harness / ".claude/rules/git-workflow.md").read_text(encoding="utf-8") + "\nv2\n")
+        new = commit_all(self.harness, "v2")
+        with redirect_stderr(io.StringIO()):
+            apply_sync.apply_sync(self.harness, self.repo, new, HARNESS_REPO, "main")
+        self.base = commit_all(self.repo, "sync v2")
+        git(self.repo, "checkout", "-q", "-b", "chore/harness-sync-old", self.base)
+        with redirect_stderr(io.StringIO()):
+            apply_sync.apply_sync(self.harness, self.repo, self.sha, HARNESS_REPO, "main")
+        head = commit_all(self.repo, "downgrade")
+        code, out = self.run_gate(head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("巻き戻し", out)
+
+    def test_ref_mismatch_is_rejected(self):
+        git(self.repo, "checkout", "-q", "-b", "chore/harness-sync-ref", self.base)
+        with redirect_stderr(io.StringIO()):
+            apply_sync.apply_sync(self.harness, self.repo, self.sha, HARNESS_REPO, "evil-branch")
+        head = commit_all(self.repo, "sync")
+        code, out = self.run_gate(head)
+        self.assertEqual(code, 1, out)
+        self.assertIn("ref が想定外", out)
 
 
 if __name__ == "__main__":
