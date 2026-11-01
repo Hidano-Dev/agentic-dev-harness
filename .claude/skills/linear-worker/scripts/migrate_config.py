@@ -11,7 +11,8 @@ config.json は同期でコピーされない(リポジトリ固有の値を持�
 - 雛形(templates/orchestration-config.json)の `applied_migrations` には全移行の ID を
   入れておく。雛形から生成した新しい config は移行済みとして扱われ、導入時に人間が
   決めた値を同期が書き換えない
-- 対象は `auto_merge` のみ。それ以外のキーを書き換える移行は足さない
+- 対象は `auto_merge` / `review.provider` / `github.release_branch`。挙動を緩める移行
+  (保護パスの段階化など)は、配布元の Release PR で人間が承認したものだけを足す
 標準ライブラリのみ使用(ランナー・ローカルどちらでも動く)。
 """
 from __future__ import annotations
@@ -54,6 +55,9 @@ def enable_auto_merge(cfg: dict) -> str | None:
         raise NotApplicable("auto_merge.protected_paths が配列ではない")
     required = DEFAULT_PROTECTED_PATHS + [".kiro/orchestration/"] + ROOT_INSTRUCTION_FILES
     missing = [p for p in required if p not in paths]
+    # 保護の段階化(2026-11-01-protected-core-tiering)後の config はコアパスが揃っていればよい
+    if missing and all(p in paths for p in CORE_PROTECTED_PATHS):
+        missing = []
     if missing:
         raise NotApplicable(f"auto_merge.protected_paths に既定の保護パス {', '.join(missing)} が無い")
     am["enabled"] = True
@@ -91,12 +95,87 @@ def protect_root_instructions(cfg: dict) -> str | None:
     return f"auto_merge.protected_paths に {', '.join(added)} を追加"
 
 
+# 保護の段階化(2026-11-01)で保護対象から外す「指示文」。コア(人間承認必須)は CORE_PROTECTED_PATHS。
+# 配布物(sync-manifest.json の owned)は policy-gate が別途保護するので protected_paths に入れない
+INSTRUCTION_PATHS = [".claude/", "CLAUDE.md", "AGENTS.md", ".agents/"]
+CORE_PROTECTED_PATHS = [
+    ".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/",
+]
+
+
+def review_provider_action(cfg: dict) -> str | None:
+    """外部レビューを Codex GitHub App(@codex review)から Actions 実行(codex-review.yml)へ切り替える。
+
+    App のレビューは実行のたびに結果がぶれ(五月雨式の指摘)、指摘ゼロのときは 👍 リアクションだけで
+    完了を示すため、ワーカーが完了を拾えないことがあった。Actions 実行は 1 ヘッド 1 レビューで、指摘ゼロでも
+    必ず review を投稿する。review.bot が null(外部レビューなし)のリポジトリには何もしない。
+    """
+    rv = cfg.get("review")
+    if rv is None:
+        return None
+    if not isinstance(rv, dict):
+        raise NotApplicable("review がオブジェクトではない")
+    if "provider" in rv:
+        return None
+    if not rv.get("bot"):
+        rv["provider"] = None
+        return "review.provider を null(外部レビューなし)に設定"
+    rv["provider"] = "action"
+    return "review.provider を action(codex-review.yml)に設定。review.bot は provider=app 用に残す"
+
+
+def protected_core_tiering(cfg: dict) -> str | None:
+    """保護パスを「コア」(ゲート・権限・CI・config)に絞り、指示文(CLAUDE.md / AGENTS.md / .claude/ 等)を外す。
+
+    指示文の変更は頻繁で、毎回人間の承認を待つと開発が止まっていた。指示文は codex-review と
+    policy-gate の不変条件(.harness/invariants.json)を通れば develop へ自動マージし、人間は
+    develop → main の Release PR でまとめて見る。配布物の直接編集は policy-gate が禁止する。
+    リポジトリ独自に足したパスは残す。
+    """
+    am = _auto_merge(cfg)
+    paths = am.get("protected_paths")
+    if paths is None:
+        am["protected_paths"] = list(CORE_PROTECTED_PATHS)
+        return "auto_merge.protected_paths をコアパスの既定に設定"
+    if not isinstance(paths, list):
+        raise NotApplicable("auto_merge.protected_paths が配列ではない")
+    kept = [p for p in paths if p not in INSTRUCTION_PATHS]
+    added = [p for p in CORE_PROTECTED_PATHS if p not in kept]
+    new = kept + added
+    if new == paths:
+        return None
+    am["protected_paths"] = new
+    removed = [p for p in paths if p in INSTRUCTION_PATHS]
+    return (f"auto_merge.protected_paths を段階化(除外: {', '.join(removed) or 'なし'} / "
+            f"追加: {', '.join(added) or 'なし'})")
+
+
+def branch_model_keys(cfg: dict) -> str | None:
+    """github.release_branch を明示する。既存リポジトリは null(単一ブランチ運用のまま)。
+
+    develop / main の 2 段構成へは scripts/sync/configure_repo.py(Rollout)が develop の作成・
+    既定ブランチの切り替えと合わせて config を書き換える。ここでは挙動を変えない。
+    """
+    gh = cfg.get("github")
+    if gh is None:
+        return None
+    if not isinstance(gh, dict):
+        raise NotApplicable("github がオブジェクトではない")
+    if "release_branch" in gh:
+        return None
+    gh["release_branch"] = None
+    return "github.release_branch を null(単一ブランチ運用)で明示"
+
+
 # (ID, 適用関数)。適用順に並べ、ID は変えない。追加したら雛形の applied_migrations にも足す
 # protect_root_instructions は enable_auto_merge より前に置く(有効化の前提条件になっているため)
 MIGRATIONS = [
     ("2026-10-01-protect-orchestration-config", protect_orchestration),
     ("2026-10-02-protect-root-instructions", protect_root_instructions),
     ("2026-10-01-auto-merge-enabled", enable_auto_merge),
+    ("2026-11-01-review-provider-action", review_provider_action),
+    ("2026-11-01-protected-core-tiering", protected_core_tiering),
+    ("2026-11-01-branch-model-keys", branch_model_keys),
 ]
 
 

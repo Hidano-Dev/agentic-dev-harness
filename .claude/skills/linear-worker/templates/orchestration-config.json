@@ -13,19 +13,35 @@
   },
   "github": {
     "repo": "<owner>/<repo>",
-    "default_branch": "main"
+    "default_branch": "develop",
+    "release_branch": "main"
   },
   "checks": {
     "fast": [],
     "unity_ci": null
   },
   "review": {
+    "provider": "action",
+    "action": {
+      "workflow": "codex-review.yml",
+      "check_name": "codex-review",
+      "max_rounds": 3,
+      "model": "",
+      "effort": ""
+    },
+    "fail_open": true,
     "bot": {
       "name": "codex",
+      "login": "chatgpt-codex-connector[bot]",
       "summary_marker": "codex-pull-request-review-summary",
       "request_comment": "@codex review"
     },
     "wait_minutes": 60
+  },
+  "conflicts": {
+    "auto_resolve": true,
+    "auto_resolve_extensions": [".md", ".markdown", ".rst", ".adoc", ".asciidoc", ".txt"],
+    "label": "needs-conflict-resolution"
   },
   "fast_track": {
     "enabled": true,
@@ -35,7 +51,8 @@
   },
   "worker": {
     "max_candidates": 5,
-    "claim_stale_hours": 24
+    "claim_stale_hours": 24,
+    "max_parallel": 2
   },
   "docs": {
     "aggregate_paths": ["README.md", "CHANGELOG.md", "docs/backlog.md"],
@@ -45,7 +62,7 @@
   "auto_merge": {
     "enabled": true,
     "method": "merge",
-    "protected_paths": [".claude/", ".github/", ".kiro/settings/", ".kiro/orchestration/", "CLAUDE.md", "AGENTS.md", ".agents/", ".codex/"],
+    "protected_paths": [".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/"],
     "merge_parked": true
   },
   "reporting": {
@@ -55,6 +72,9 @@
   "applied_migrations": [
     "2026-10-01-auto-merge-enabled",
     "2026-10-01-protect-orchestration-config",
-    "2026-10-02-protect-root-instructions"
+    "2026-10-02-protect-root-instructions",
+    "2026-11-01-review-provider-action",
+    "2026-11-01-protected-core-tiering",
+    "2026-11-01-branch-model-keys"
   ]
 }
