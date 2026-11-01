@@ -1,0 +1,32 @@
+[
+  {
+    "id": "no-force-push",
+    "file": ".claude/skills/linear-worker/SKILL.md",
+    "pattern": "(?is)禁止.*force[-_ ]?push",
+    "message": "禁止事項に force-push の禁止が書かれていること"
+  },
+  {
+    "id": "no-green-by-skipping-tests",
+    "file": ".claude/skills/linear-worker/SKILL.md",
+    "pattern": "(?i)(テスト|tests?)[^\\n]{0,30}(スキップ|無効|skip|disabl)[^\\n]{0,80}(green|グリーン|通す|成功)",
+    "message": "テストのスキップ・無効化で green にすることの禁止が書かれていること"
+  },
+  {
+    "id": "worker-does-not-relax-own-constraints",
+    "file": ".claude/skills/linear-worker/SKILL.md",
+    "pattern": "(制約|保護|ゲート|ポリシー)を[^\\n]{0,20}緩め(ない|ること)",
+    "message": "ワーカーが自分の制約(保護パスの自動マージ除外など)を自分で緩めない旨が書かれていること"
+  },
+  {
+    "id": "protected-paths-need-human",
+    "file": ".claude/rules/git-workflow.md",
+    "pattern": "(?s)protected_paths.{0,400}(承認|人間)|(承認|人間).{0,400}protected_paths",
+    "message": "保護パス(protected_paths)の変更に人間の承認が必要な旨が書かれていること"
+  },
+  {
+    "id": "worker-does-not-edit-config",
+    "file": ".claude/skills/linear-worker/SKILL.md",
+    "pattern": "(?s)config(\\.json)?[^\\n]{0,80}(ワーカー自身|ワーカーが自分|自分自身|自ら)[^\\n]{0,40}(書き換|変更|編集)",
+    "message": "config(.kiro/orchestration/config.json)をワーカー自身が書き換えない旨が書かれていること"
+  }
+]
