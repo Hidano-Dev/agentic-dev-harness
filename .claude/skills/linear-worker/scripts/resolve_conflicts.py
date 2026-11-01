@@ -8,7 +8,9 @@ git はコンフリクトとして止まる。これを機械的に「両方残�
 - `git merge` がコンフリクトで止まった状態の作業ツリーで実行する。`git ls-files -u` に出る
   各ファイルについて判定する
 - 対象: config の `conflicts.auto_resolve_extensions`(既定 .md / .markdown / .rst / .adoc /
-  .asciidoc / .txt)に拡張子が一致し、バイナリでもシンボリックリンクでもなく、ours と theirs の
+  .asciidoc。.txt は依存・ビルド定義と区別できないので含めない)に拡張子が一致し、
+  依存・ビルド定義やエージェントへの指示(requirements*.txt / CMakeLists.txt / CLAUDE.md /
+  AGENTS.md / SKILL.md 等。classify_change.py の NON_DOC_BASENAME)でなく、バイナリでもシンボリックリンクでもなく、ours と theirs の
   両ステージがあるファイル(add/add は base を空として扱う)。コードファイルは対象外
 - 判定は `git merge-file -p --diff3` の出力の衝突ブロックごとに行う:
   - base が空(両側が同じ位置に追記しただけ)→ ours → theirs の順で連結する。両側で同じ
@@ -31,13 +33,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 CONFIG_REL = Path(".kiro/orchestration/config.json")
-DEFAULT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc", ".txt"]
+# .txt は requirements.txt / CMakeLists.txt のような依存・ビルド定義と区別できないので既定に含めない
+DEFAULT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc"]
+# 拡張子の設定にかかわらず自動解消しないファイル名(依存・ビルド定義とエージェントへの指示)。
+# classify_change.py の NON_DOC_BASENAME と同じ(`python3 -I` ではスクリプトのディレクトリが
+# sys.path に入らず import できないので写している。tests/test_resolve_conflicts.py が一致を検査する)
+NON_DOC_BASENAME = re.compile(
+    r"^(?:(?:requirements|constraints)[\w.-]*\.(?:txt|in)|cmakelists\.txt|"
+    r"(?:claude|agents|gemini|skill|copilot-instructions)\.md)$",
+    re.IGNORECASE,
+)
 # 本文中のマーカー風の行(7 文字の <<<<<<< 等)と区別するため長めにする
 MARKER_SIZE = 30
 M_OURS = b"<" * MARKER_SIZE
@@ -183,6 +195,8 @@ def blob(root: Path, sha: str) -> bytes:
 def try_resolve(root: Path, path: str, stages: dict[int, tuple[str, str]], exts: list[str]) -> tuple[bytes | None, str]:
     if not any(path.lower().endswith(e) for e in exts):
         return None, "対象外の拡張子"
+    if NON_DOC_BASENAME.match(path.rsplit("/", 1)[-1]):
+        return None, "依存・ビルド定義またはエージェントへの指示"
     if 2 not in stages or 3 not in stages:
         return None, "片側で削除されている(modify/delete)"
     if any(mode == "120000" for mode, _ in stages.values()):
