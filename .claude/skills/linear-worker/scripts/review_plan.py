@@ -5,6 +5,7 @@
   {mode, base, head, prev_sha, round, reason, ...}
   - mode:
     - skip: レビューしない(前回の結果を引き継ぐ / レビュー不要)。次のいずれか
+      (-) review.provider が null(外部レビューなし)/ app(Codex GitHub App がレビューする)。何も投稿しない
       (a) fast track(PR 全体、または前回レビュー済みヘッドからの追加分が `classify_change.py` で 0)
       (b) 前回レビュー済みのヘッドと同じ SHA
       (c) PR 自身の差分(merge-base からの `git diff -U0` の `git patch-id --stable`)が前回と一致
@@ -126,6 +127,9 @@ def decide(*, base: str, head: str, markers: list[dict], settings: dict, config:
         plan.update(mode="skip", round=prev_round, reason=reason, announce=announce)
         return plan
 
+    provider_reason = common.provider_skip_reason(settings["provider"])
+    if provider_reason:  # Codex は呼ばず、PR にも何も投稿しない
+        return skip(provider_reason, announce=False)
     if is_fast_track(pr_base, head, config):
         return skip("PR 全体が fast track(テキスト / コメントのみ)", announce=prev is not None)
     if prev is None:
@@ -252,8 +256,13 @@ def main(argv: list[str] | None = None) -> int:
         cfg = common.load_config(Path(a.config))
         settings = common.review_settings(cfg)
         repo = common.resolve_repo(a.repo, cfg)
-        markers = fetch_markers(repo, a.pr)
+        markers = fetch_markers(repo, a.pr) if settings["provider"] == "action" else []
         plan = decide(base=a.base, head=a.head, markers=markers, settings=settings, config=a.config)
+        if plan["mode"] in ("full", "delta"):
+            # post_review.py が Codex の実行後に PR ヘッドの作業ツリーで git を実行しなくて済むよう、
+            # インラインコメントを付けられる行をここで計算しておく(キーの順序 = 差分の順序)
+            plan["commentable"] = {p: sorted(v) for p, v in
+                                   common.commentable_lines(plan["merge_base"], plan["head"]).items()}
         if a.prompt_out and plan["mode"] in ("full", "delta"):
             template = Path(a.template).read_text(encoding="utf-8")
             prompt = build_prompt(template, plan, repo=repo, pr=a.pr, guidelines=review_guidelines(plan["pr_base"]))

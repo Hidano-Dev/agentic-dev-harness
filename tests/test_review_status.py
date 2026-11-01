@@ -277,6 +277,21 @@ class MainTest(unittest.TestCase):
                                                  "--config", "missing.json"]), 0)
         self.assertEqual(json.loads(buf.getvalue())["provider"], "app")
 
+    def test_provider_null(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "cfg.json"
+            cfg.write_text(json.dumps({"review": {"provider": None}}), encoding="utf-8")
+            with mock.patch.object(review_status, "fetch_pr") as fp:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(review_status.main(["--pr", "1", "--repo", "o/r", "--config", str(cfg)]), 0)
+            fp.assert_not_called()
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["state"], "skipped")
+        self.assertIn("review.provider=null", out["reason"])
+
     def test_error(self):
         with mock.patch.object(review_status, "fetch_pr", side_effect=common.GitHubError("nope")):
             buf = io.StringIO()
