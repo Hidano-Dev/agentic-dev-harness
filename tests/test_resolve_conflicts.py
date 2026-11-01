@@ -250,6 +250,32 @@ class ResolveConflictsTest(unittest.TestCase):
         a = mods["resolve_conflicts"].NON_DOC_BASENAME
         b = mods["classify_change"].NON_DOC_BASENAME
         self.assertEqual((a.pattern, a.flags), (b.pattern, b.flags))
+        self.assertEqual(mods["resolve_conflicts"].NON_DOC_DIRS, mods["classify_change"].NON_DOC_DIRS)
+        self.assertEqual(mods["resolve_conflicts"].DEFAULT_TEXT_EXCLUDE_PATHS,
+                         mods["classify_change"].DEFAULT_TEXT_EXCLUDE_PATHS)
+
+    def test_agent_dirs_exclude_paths_and_owned_never_resolved(self):
+        refused = {
+            ".claude/rules/git-workflow.md": "依存・ビルド定義またはエージェントへの指示",
+            "sub/.github/doc.md": "依存・ビルド定義またはエージェントへの指示",
+            ".cursor/rules/x.md": "依存・ビルド定義またはエージェントへの指示",
+            "Assets/readme.md": "除外パス(fast_track.text_exclude_paths)",
+            "docs/owned/guide.md": "配布物(.harness/version の owned)",
+            "owned-file.md": "配布物(.harness/version の owned)",
+        }
+        version = json.dumps({"owned": ["docs/owned", "owned-file.md"], "repo": "x/y", "ref": "main", "sha": "0"})
+        base = {n: b"a\n" for n in [*refused, "docs/ok.md"]}
+        base[".harness/version"] = version.encode()
+        self.repo.setup(
+            base,
+            {n: b"a\no\n" for n in [*refused, "docs/ok.md"]},
+            {n: b"a\nt\n" for n in [*refused, "docs/ok.md"]},
+        )
+        rc, out = self.repo.run()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["resolved"], ["docs/ok.md"])
+        self.assertEqual(out["reasons"], refused)
+        self.assertEqual(self.repo.unmerged(), set(refused))
 
     def test_dry_run_does_not_write(self):
         base = b"# D\n"
