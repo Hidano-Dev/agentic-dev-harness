@@ -13,9 +13,15 @@
    必須チェック = codex-review / policy-gate / aggregate-docs(docs-policy.yml)+ 既存 CI
    (直近の既定ブランチのコミットの check runs のうち、pull_request で走る GitHub Actions の
    ワークフローのもの。config の checks.unity_ci.workflow は除く)。strict=false、
-   conversation resolution 必須、force-push / 削除禁止。既存の必須チェックは残す
+   conversation resolution 必須、force-push / 削除禁止。既存の必須チェックは残す。
+   ハーネスのチェックは、それを出すワークフロー(.github/workflows/policy-gate.yml 等)が
+   develop(未作成なら作成元)にあるものだけ必須にする(無いと永遠に来ないチェックで止まる)
 4. リリースブランチ(既定: 変更前の既定ブランチ。それが develop なら main)の protection:
    PR 必須・承認 1 以上、force-push / 削除禁止。既存の必須チェック等は残す
+
+--protection-only: 1〜4 を行わず、既定ブランチが develop で保護が設定済みのときだけ、ワークフローが
+揃ったハーネスの必須チェックを足す(導入 PR のマージ後に harness-sync.yml が push のたびに呼ぶ。冪等)。
+--result: 変更前後の既定ブランチ・リリースブランチを JSON で書く(rollout / onboard が config に反映する)。
 
 指定しない項目(develop の承認数・push 制限・管理者への適用など)は既存の設定を保つ。
 標準ライブラリのみ使用。
@@ -34,6 +40,13 @@ import urllib.request
 from dataclasses import dataclass, field
 
 HARNESS_CHECKS = ["codex-review", "policy-gate", "aggregate-docs"]
+# ハーネスの必須チェックと、それを出すワークフロー。ワークフローが保護対象ブランチに無いうちは
+# チェックが永遠に来ない(pull_request_target は base にあるワークフローしか動かさない)ので必須にしない
+HARNESS_CHECK_WORKFLOWS = {
+    "codex-review": ".github/workflows/codex-review.yml",
+    "policy-gate": ".github/workflows/policy-gate.yml",
+    "aggregate-docs": ".github/workflows/docs-policy.yml",
+}
 DEVELOP = "develop"
 CONFIG_REL = ".kiro/orchestration/config.json"
 PR_TRIGGER_RE = re.compile(r"\bpull_request\b")
@@ -89,6 +102,9 @@ class Action:
 class Plan:
     actions: list[Action] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    previous_default_branch: str = ""
+    default_branch: str = ""
+    release_branch: str | None = None
 
 
 def enabled(d, key: str, default=False) -> bool:
@@ -183,6 +199,45 @@ def infer_ci_checks(gh, repo: str, branch: str) -> tuple[list[str], list[str]]:
     return sorted(names), notes
 
 
+def available_harness_checks(gh, repo: str, ref: str) -> tuple[list[str], list[str]]:
+    """ref にワークフローがあるハーネスのチェック名と、見送ったもののメモを返す。"""
+    present, notes = [], []
+    for name, path in HARNESS_CHECK_WORKFLOWS.items():
+        if get_or_none(gh, f"/repos/{repo}/contents/{path}?ref={urllib.parse.quote(ref)}") is not None:
+            present.append(name)
+        else:
+            notes.append(f"{name} は {ref} に {path} が無いため必須にしない(同期 PR のマージ後に "
+                         "harness-sync.yml の --protection-only で追加される)")
+    return present, notes
+
+
+def build_protection_only_plan(gh, repo: str) -> Plan:
+    """既定ブランチ(develop)の既存の保護に、足りないハーネスの必須チェックだけを足す。"""
+    plan = Plan()
+    info = gh.request("GET", f"/repos/{repo}")
+    default = info["default_branch"]
+    plan.previous_default_branch = plan.default_branch = default
+    if default != DEVELOP:
+        plan.notes.append(f"既定ブランチが {DEVELOP} ではない({default})ため何もしない(2 段構成は configure_repo で導入する)")
+        return plan
+    current = get_or_none(gh, f"/repos/{repo}/branches/{DEVELOP}/protection")
+    if current is None:
+        plan.notes.append(f"{DEVELOP} に保護が無いため何もしない(configure_repo --apply で設定する)")
+        return plan
+    present, notes = available_harness_checks(gh, repo, DEVELOP)
+    plan.notes += notes
+    cur = protection_to_put(current)
+    want = json.loads(json.dumps(cur))
+    rsc = want["required_status_checks"] or {"strict": False, "contexts": []}
+    missing = sorted(set(present) - set(rsc["contexts"]))
+    if missing:
+        rsc["contexts"] = sorted(set(rsc["contexts"]) | set(missing))
+        want["required_status_checks"] = rsc
+        plan.actions.append(Action(f"{DEVELOP} の必須チェックに追加: {', '.join(missing)}", "PUT",
+                                   f"/repos/{repo}/branches/{DEVELOP}/protection", want))
+    return plan
+
+
 def build_plan(gh, repo: str, *, create_develop: bool, release_branch: str | None = None,
                extra_checks: list[str] = (), exclude_checks: list[str] = (),
                required_checks: list[str] | None = None) -> Plan:
@@ -191,6 +246,9 @@ def build_plan(gh, repo: str, *, create_develop: bool, release_branch: str | Non
     default = info["default_branch"]
     release = release_branch or (default if default != DEVELOP else "main")
     develop = get_or_none(gh, f"/repos/{repo}/branches/{DEVELOP}")
+    plan.previous_default_branch = default
+    plan.default_branch = DEVELOP
+    plan.release_branch = release
 
     if develop is None:
         if not create_develop:
@@ -221,7 +279,10 @@ def build_plan(gh, repo: str, *, create_develop: bool, release_branch: str | Non
     cur = protection_to_put(current)
     want = json.loads(json.dumps(cur))
     contexts = set((cur["required_status_checks"] or {}).get("contexts") or [])
-    contexts |= set(HARNESS_CHECKS) | set(ci) | set(extra_checks)
+    # develop は無ければ既定ブランチから作るので、ワークフローの有無はその作成元で見る
+    present, notes = available_harness_checks(gh, repo, DEVELOP if develop else default)
+    plan.notes += notes
+    contexts |= set(present) | set(ci) | set(extra_checks)
     contexts -= set(exclude_checks)
     want["required_status_checks"] = {"strict": False, "contexts": sorted(contexts)}
     want["required_conversation_resolution"] = True
@@ -268,6 +329,10 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--extra-check", action="append", default=[], help="develop の必須チェックに足す名前(カンマ区切り可)")
     ap.add_argument("--exclude-check", action="append", default=[], help="develop の必須チェックから外す名前")
     ap.add_argument("--checks", help="既存 CI の check 名を推定せずこの一覧(カンマ区切り)にする")
+    ap.add_argument("--protection-only", action="store_true",
+                    help="既定ブランチ(develop)の既存の保護に、ワークフローが揃ったハーネスの必須チェックだけを足す"
+                         "(develop 作成・既定ブランチ変更・リリースブランチの保護はしない)")
+    ap.add_argument("--result", help="結果 JSON(変更前後の既定ブランチ・リリースブランチ)の書き出し先")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", default=True, help="予定を表示するだけ(既定)")
     mode.add_argument("--apply", action="store_true", help="実際に変更する")
@@ -281,12 +346,21 @@ def main(argv: list[str] | None = None, gh=None) -> int:
             return 1
         gh = GitHub(token)
     try:
-        plan = build_plan(gh, a.repo, create_develop=a.create_develop, release_branch=a.release_branch,
-                          extra_checks=split_list(a.extra_check), exclude_checks=split_list(a.exclude_check),
-                          required_checks=split_list([a.checks]) if a.checks is not None else None)
+        if a.protection_only:
+            plan = build_protection_only_plan(gh, a.repo)
+        else:
+            plan = build_plan(gh, a.repo, create_develop=a.create_develop, release_branch=a.release_branch,
+                              extra_checks=split_list(a.extra_check), exclude_checks=split_list(a.exclude_check),
+                              required_checks=split_list([a.checks]) if a.checks is not None else None)
     except ApiError as e:
         print(f"::error::{a.repo} の設定を読めない: {e}", file=sys.stderr)
         return 1
+    if a.result:
+        with open(a.result, "w", encoding="utf-8") as f:
+            json.dump({"repo": a.repo, "applied": bool(a.apply),
+                       "previous_default_branch": plan.previous_default_branch,
+                       "default_branch": plan.default_branch, "release_branch": plan.release_branch,
+                       "actions": [x.description for x in plan.actions]}, f, ensure_ascii=False, indent=2)
     label = "実行" if a.apply else "予定(--dry-run。--apply で実行)"
     print(f"{a.repo}: {label}")
     for n in plan.notes:

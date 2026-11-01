@@ -17,6 +17,12 @@
 # - GitHub App のトークンが必須(GITHUB_TOKEN ではワークフローを更新できず、push で CI も起動しない)。
 #   組織 secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無ければ warning を出して終了する
 # - 配布物(.claude/skills/linear-worker 等)はこのリポジトリで直接編集しない(policy-gate が失敗させる)
+# - 導入 PR(policy-gate.yml 等を初めて足す同期 PR)は人間がマージする。pull_request_target の
+#   policy-gate は base に定義があって初めて動くので、導入 PR 自身には policy-gate が付かない。
+#   configure_repo.py もワークフローが develop に無いチェックは必須にしない
+# - 既定ブランチへの push のたびに configure_repo.py --protection-only で、ワークフローが揃った
+#   ハーネスの必須チェック(policy-gate / codex-review / aggregate-docs)を develop の保護に足す
+#   (導入 PR のマージ後に保護が完成する。App に Administration 権限が無ければ warning で続行)
 # - 取り込み元が public リポジトリである前提(clone にトークンを使わない)
 #
 # 配置先: .github/workflows/harness-sync.yml
@@ -81,6 +87,20 @@ jobs:
           private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ steps.pre.outputs.name }}
+
+      # 導入 PR のマージ等で policy-gate.yml / codex-review.yml / docs-policy.yml が既定ブランチに
+      # 揃ったら、その必須チェックを develop の保護に足す(冪等。足りないものだけ追加)
+      - name: Reconcile branch protection
+        if: steps.pre.outputs.run == 'true' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          c="$RUNNER_TEMP/harness-configure"
+          if ! git clone --quiet --depth 1 --branch "$HARNESS_REF" "https://github.com/${HARNESS_REPO}.git" "$c"; then
+            echo "::warning::配布元を clone できないため branch protection の補完をスキップしました"; exit 0
+          fi
+          python3 -I "$c/scripts/sync/configure_repo.py" --repo "$GITHUB_REPOSITORY" --protection-only --apply \
+            || echo "::warning::branch protection の補完に失敗しました(App に Administration: write が無い可能性。同期は続行します)"
 
       - name: Resolve default branch
         id: repo

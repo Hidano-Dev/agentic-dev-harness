@@ -43,7 +43,7 @@ class FakeGitHub:
         return [c for c in self.calls if c[0] != "GET"]
 
 
-def base_routes(default="main", develop=False, allow_auto_merge=False) -> dict:
+def base_routes(default="main", develop=False, allow_auto_merge=False, harness_workflows=True) -> dict:
     routes = {
         f"/repos/{REPO}": {"default_branch": default, "allow_auto_merge": allow_auto_merge, "allow_merge_commit": True},
         f"/repos/{REPO}/branches/main": {"name": "main"},
@@ -71,6 +71,10 @@ def base_routes(default="main", develop=False, allow_auto_merge=False) -> dict:
     }
     if develop:
         routes[f"/repos/{REPO}/branches/develop"] = {"name": "develop"}
+    if harness_workflows:
+        for ref in ("main", "develop"):
+            for wf in cr.HARNESS_CHECK_WORKFLOWS.values():
+                routes[f"/repos/{REPO}/contents/{wf}?ref={ref}"] = b64("on: pull_request_target\n")
     return routes
 
 
@@ -178,6 +182,93 @@ class ConfigureRepoTest(unittest.TestCase):
                              extra_checks=["e2e"], exclude_checks=["aggregate-docs"])
         dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
         self.assertEqual(dev["required_status_checks"]["contexts"], ["build", "codex-review", "e2e", "policy-gate"])
+
+
+class HarnessWorkflowPresenceTest(unittest.TestCase):
+    def test_harness_checks_skipped_when_workflows_absent(self):
+        gh = FakeGitHub(base_routes(harness_workflows=False))
+        plan = cr.build_plan(gh, REPO, create_develop=True)
+        dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
+        self.assertEqual(dev["required_status_checks"]["contexts"], ["lint", "test"])
+        notes = "\n".join(plan.notes)
+        for name in cr.HARNESS_CHECKS:
+            self.assertIn(name, notes)
+
+    def test_only_present_workflows_become_required(self):
+        routes = base_routes(harness_workflows=False)
+        routes[f"/repos/{REPO}/contents/.github/workflows/docs-policy.yml?ref=main"] = b64("on: pull_request\n")
+        plan = cr.build_plan(FakeGitHub(routes), REPO, create_develop=True, required_checks=[])
+        dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
+        self.assertEqual(dev["required_status_checks"]["contexts"], ["aggregate-docs"])
+
+    def test_result_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r.json"
+            routes = base_routes(default="master")
+            routes[f"/repos/{REPO}/branches/master"] = {"name": "master"}
+            routes[f"/repos/{REPO}/git/ref/heads/master"] = {"object": {"sha": SHA}}
+            routes[f"/repos/{REPO}/contents/.kiro/orchestration/config.json?ref=master"] = b64("{}")
+            for wf in cr.HARNESS_CHECK_WORKFLOWS.values():
+                routes[f"/repos/{REPO}/contents/{wf}?ref=master"] = b64("x")
+            code, _ = run(FakeGitHub(routes), "--create-develop", "--result", str(out))
+            self.assertEqual(code, 0)
+            r = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual((r["previous_default_branch"], r["default_branch"], r["release_branch"]),
+                         ("master", "develop", "master"))
+        self.assertFalse(r["applied"])
+
+
+class ProtectionOnlyTest(unittest.TestCase):
+    def routes(self, contexts, harness_workflows=True):
+        routes = base_routes(default="develop", develop=True, allow_auto_merge=True,
+                             harness_workflows=harness_workflows)
+        routes[f"/repos/{REPO}/branches/develop/protection"] = {
+            "required_status_checks": {"strict": False, "contexts": contexts},
+            "required_pull_request_reviews": {"required_approving_review_count": 0},
+            "required_conversation_resolution": {"enabled": True},
+        }
+        return routes
+
+    def test_adds_only_missing_harness_checks(self):
+        gh = FakeGitHub(self.routes(["test", "aggregate-docs"]))
+        code, out = run(gh, "--protection-only", "--apply")
+        self.assertEqual(code, 0, out)
+        writes = gh.writes()
+        self.assertEqual([(m, p) for m, p, _ in writes], [("PUT", f"/repos/{REPO}/branches/develop/protection")])
+        body = writes[0][2]
+        self.assertEqual(body["required_status_checks"]["contexts"],
+                         ["aggregate-docs", "codex-review", "policy-gate", "test"])
+        self.assertTrue(body["required_conversation_resolution"])
+        self.assertEqual(body["required_pull_request_reviews"]["required_approving_review_count"], 0)
+
+    def test_idempotent(self):
+        gh = FakeGitHub(self.routes(["aggregate-docs", "codex-review", "policy-gate"]))
+        code, out = run(gh, "--protection-only", "--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("変更なし", out)
+        self.assertEqual(gh.writes(), [])
+
+    def test_waits_for_missing_workflows(self):
+        routes = self.routes(["test"], harness_workflows=False)
+        routes[f"/repos/{REPO}/contents/.github/workflows/policy-gate.yml?ref=develop"] = b64("x")
+        gh = FakeGitHub(routes)
+        run(gh, "--protection-only", "--apply")
+        self.assertEqual(gh.writes()[0][2]["required_status_checks"]["contexts"], ["policy-gate", "test"])
+
+    def test_noop_without_two_tier_setup(self):
+        gh = FakeGitHub(base_routes())  # 既定ブランチが main のまま
+        code, out = run(gh, "--protection-only", "--apply")
+        self.assertEqual((code, gh.writes()), (0, []))
+        routes = base_routes(default="develop", develop=True)  # develop に保護が無い
+        gh = FakeGitHub(routes)
+        code, _ = run(gh, "--protection-only", "--apply")
+        self.assertEqual((code, gh.writes()), (0, []))
+
+    def test_dry_run_default(self):
+        gh = FakeGitHub(self.routes(["test"]))
+        run(gh, "--protection-only")
+        self.assertEqual(gh.writes(), [])
 
 
 class RegistryTargetsTest(unittest.TestCase):

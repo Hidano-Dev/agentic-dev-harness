@@ -1,0 +1,79 @@
+# =============================================================================
+# Policy Gate Relabel(取り込み側リポジトリに置く。agentic-dev-harness が配布)
+# -----------------------------------------------------------------------------
+# policy-gate-recheck.yml(レビューの提出・取り消しで動く合図役)の完了を workflow_run で受け、
+# 対象 PR のラベル policy-gate-recheck を付け直して policy-gate.yml(pull_request_target の
+# labeled)を再評価させる。人間が Approve したら gate が緑になる。
+#
+# - workflow_run のワークフロー定義は常に既定ブランチから取られる(PR に書き換えられない)ので、
+#   App の secret はここでだけ使う。PR のコードは checkout も実行もしない
+# - GITHUB_TOKEN で付けたラベルではワークフローが起動しないので App トークンを使う
+#   (secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY。無ければ warning で終了 — その場合は
+#   Actions 画面から policy-gate を手動で Re-run する)
+# - PR は workflow_run.pull_requests から取り、空(fork の PR 等)なら head の sha に紐づく PR を引く
+# - 配置先: .github/workflows/policy-gate-relabel.yml(Harness Sync が更新する)
+# =============================================================================
+name: Policy Gate Relabel
+
+on:
+  workflow_run:
+    workflows: [Policy Gate Recheck]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: policy-gate-relabel-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  relabel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check App secrets
+        id: secrets
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため policy-gate を再評価できません(Actions 画面から Re-run してください)"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create App token
+        if: steps.secrets.outputs.ok == 'true'
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.secrets.outputs.name }}
+
+      - name: Re-add recheck label
+        if: steps.secrets.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PRS_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          LABEL: policy-gate-recheck
+        run: |
+          prs=$(jq -r '.[].number' <<<"$PRS_JSON")
+          if [ -z "$prs" ]; then
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" \
+              --jq '.[] | select(.state == "open") | .number')
+          fi
+          if [ -z "$prs" ]; then
+            echo "::notice::$HEAD_SHA に対応する open な PR が見つかりません"; exit 0
+          fi
+          gh label create "$LABEL" -R "$GITHUB_REPOSITORY" --color BFD4F2 \
+            --description "policy-gate の再評価用(自動で付け外しされる)" 2>/dev/null || true
+          for n in $prs; do
+            case "$n" in *[!0-9]*) continue ;; esac
+            gh pr edit "$n" -R "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null 2>&1 || true
+            gh pr edit "$n" -R "$GITHUB_REPOSITORY" --add-label "$LABEL"
+          done

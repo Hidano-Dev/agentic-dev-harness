@@ -6,9 +6,13 @@
 # (以後は各リポジトリの harness-sync.yml が自走する)。
 #
 #   1. (configure_settings=true のとき)scripts/sync/configure_repo.py --apply --create-develop:
-#      develop 作成・既定ブランチ変更・Allow auto-merge・develop / main の branch protection
+#      develop 作成・既定ブランチ変更・Allow auto-merge・develop / リリースブランチの branch protection。
+#      リリースブランチは切り替え前の既定ブランチ(main / master 等)。ハーネスの必須チェックは
+#      ワークフローが既定ブランチに揃ってから harness-sync.yml(--protection-only)が足す
 #   2. scripts/sync/apply_sync.py で配布物を適用 → scripts/sync/publish_sync_pr.py で同期 PR
-#      (ラベル harness-sync・自動マージ予約)
+#      (ラベル harness-sync・自動マージ予約)。この実行で develop へ切り替えたら config の
+#      github.default_branch / release_branch も set_branch_model.py で合わせる
+#   この導入 PR(policy-gate.yml 等を初めて足す・config を変える)は人間がマージする
 #
 # main からのみ実行できる(取り込み側の policy-gate は配布元 main に含まれるコミットしか
 # 同期として認めない)。
@@ -102,19 +106,40 @@ jobs:
           path: harness
           fetch-depth: 0
 
+      # configure_repo より前の既定ブランチ(main / master 等)を控える。develop へ切り替えたら
+      # これがリリースブランチになる
+      - name: Resolve prior default branch
+        id: prior
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ matrix.repo }}
+        run: echo "default_branch=$(gh api "repos/$REPO" --jq .default_branch)" >> "$GITHUB_OUTPUT"
+
       - name: Configure repository settings
         if: inputs.configure_settings
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ matrix.repo }}
-        run: python3 -I harness/scripts/sync/configure_repo.py --repo "$REPO" --create-develop --apply
+          PRIOR: ${{ steps.prior.outputs.default_branch }}
+        run: |
+          args=()
+          if [ "$PRIOR" != "develop" ]; then args=(--release-branch "$PRIOR"); fi
+          python3 -I harness/scripts/sync/configure_repo.py --repo "$REPO" --create-develop --apply \
+            "${args[@]}"
 
       - name: Resolve default branch
         id: repo
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ matrix.repo }}
-        run: echo "default_branch=$(gh api "repos/$REPO" --jq .default_branch)" >> "$GITHUB_OUTPUT"
+          PRIOR: ${{ steps.prior.outputs.default_branch }}
+        run: |
+          branch=$(gh api "repos/$REPO" --jq .default_branch)
+          echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
+          # configure_repo が実際に既定ブランチを develop へ切り替えたときだけ、config のブランチ設定も変える
+          if [ "$PRIOR" != "develop" ] && [ "$branch" = "develop" ]; then
+            echo "release_branch=$PRIOR" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Checkout target
         uses: actions/checkout@v4
@@ -129,17 +154,18 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ matrix.repo }}
           DEFAULT_BRANCH: ${{ steps.repo.outputs.default_branch }}
-          CONFIGURE: ${{ inputs.configure_settings }}
+          RELEASE_BRANCH: ${{ steps.repo.outputs.release_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           sha=$(git -C harness rev-parse HEAD)
           python3 -I harness/scripts/sync/apply_sync.py --harness harness --target target --sha "$sha" \
             --harness-repo "$GITHUB_REPOSITORY" --ref "$HARNESS_REF"
-          # develop を作った場合は config のブランチ設定も合わせる(config はコアなので、この同期 PR は
-          # policy-gate が人間の承認を求める。初回導入時に 1 度だけ)
-          if [ "$CONFIGURE" = "true" ] && [ "$DEFAULT_BRANCH" = "develop" ]; then
+          # この実行で既定ブランチを develop へ切り替えた場合は config のブランチ設定も合わせる
+          # (リリースブランチは切り替え前の既定ブランチ。config はコアなので、この同期 PR は
+          # 人間の承認が要る。初回導入時に 1 度だけ)
+          if [ -n "$RELEASE_BRANCH" ]; then
             python3 -I harness/scripts/sync/set_branch_model.py --target target \
-              --default-branch develop --release-branch main
+              --default-branch develop --release-branch "$RELEASE_BRANCH"
           fi
           python3 -I harness/scripts/sync/publish_sync_pr.py --target target --repo "$REPO" \
             --base "$DEFAULT_BRANCH" --sha "$sha" --harness-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"

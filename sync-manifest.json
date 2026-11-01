@@ -11,7 +11,8 @@
     "templates/consumer/policy-gate.yml": ".github/workflows/policy-gate.yml",
     "templates/consumer/conflict-sweeper.yml": ".github/workflows/conflict-sweeper.yml",
     "templates/consumer/promote.yml": ".github/workflows/promote.yml",
-    "templates/consumer/policy-gate-recheck.yml": ".github/workflows/policy-gate-recheck.yml"
+    "templates/consumer/policy-gate-recheck.yml": ".github/workflows/policy-gate-recheck.yml",
+    "templates/consumer/policy-gate-relabel.yml": ".github/workflows/policy-gate-relabel.yml"
   },
   "claude_md_import": "@.claude/rules/git-workflow.md"
 }
