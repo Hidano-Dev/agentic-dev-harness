@@ -50,6 +50,10 @@ FINDING_MARKER = "harness-codex-finding"  # インラインコメント 1 件ご
 MARKER_RE = re.compile(r"<!-- harness-codex-review((?:\s+[a-z_]+=[^\s<>]*)+)\s*-->")
 FINDINGS_RE = re.compile(r"<!-- harness-codex-findings ([A-Za-z0-9+/=]*) -->")
 FINDING_RE = re.compile(r"<!-- harness-codex-finding severity=(P[0-3]) -->")
+REASON_MARKER = "harness-codex-reason"  # skip / unavailable の理由(review_status が表示する)
+REASON_RE = re.compile(r"<!-- harness-codex-reason ([A-Za-z0-9+/=]*) -->")
+NO_API_KEY_REASON = ("OPENAI_API_KEY が未設定のため Codex レビューを実行できません。"
+                     "組織 secret を設定するか config の review.provider を app / null にしてください")
 SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
 
@@ -140,6 +144,10 @@ def encode_findings(findings: list[dict]) -> str:
     return f"<!-- {FINDINGS_MARKER} {base64.b64encode(raw).decode('ascii')} -->"
 
 
+def encode_reason(reason: str) -> str:
+    return f"<!-- {REASON_MARKER} {base64.b64encode(str(reason).encode('utf-8')).decode('ascii')} -->"
+
+
 def parse_marker(text: str | None) -> dict | None:
     """本文の最後のマーカー(と findings)を読む。壊れていれば None。"""
     if not text:
@@ -165,9 +173,16 @@ def parse_marker(text: str | None) -> dict | None:
                 findings = [f for f in data if isinstance(f, dict)]
         except (ValueError, UnicodeDecodeError):
             findings = []
+    reason = ""
+    rm = list(REASON_RE.finditer(text))
+    if rm:
+        try:
+            reason = base64.b64decode(rm[-1].group(1), validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            reason = ""
     patch = attrs.get("patch", "none")
     return {"sha": sha, "round": round_, "patch": "" if patch == "none" else patch,
-            "mode": mode, "findings": findings}
+            "mode": mode, "findings": findings, "reason": reason}
 
 
 def login_of(user) -> str:

@@ -284,6 +284,16 @@ class PostReviewTest(GitRepoTestCase):
         self.assertEqual((m["mode"], m["round"]), ("unavailable", 0))
         self.assertIn("fail-open", self.posted[-1][1])
 
+    def test_unavailable_records_reason(self):
+        for fail_open, words in ((True, "成功させています"), (False, "失敗させています")):
+            with self.subTest(fail_open=fail_open):
+                self.posted.clear()
+                post_review.post("unavailable", dict(self.plan, fail_open=fail_open), repo="o/r", pr=5,
+                                 reason=common.NO_API_KEY_REASON)
+                body = self.posted[-1][1]
+                self.assertIn(words, body)
+                self.assertEqual(common.parse_marker(body)["reason"], common.NO_API_KEY_REASON)
+
     def test_large_findings_are_truncated(self):
         many = [{"severity": "P2", "path": "src/renamed.py", "line": 10, "title": f"t{i}", "body": "x" * 3000}
                 for i in range(200)]

@@ -177,6 +177,26 @@ class ActionProviderTest(unittest.TestCase):
         self.assertEqual(s["state"], "unavailable")
         self.assertIn("failure", s["reason"])
 
+    def test_missing_api_key_is_unavailable(self):
+        body = marker_body(HEAD, "unavailable", 0) + "\n" + common.encode_reason(common.NO_API_KEY_REASON)
+        for conclusion in ("success", "failure"):  # review.fail_open = true / false
+            with self.subTest(conclusion=conclusion):
+                self.completed(conclusion)
+                self.gh.comments = [{"id": 9, "user": GHA, "body": body, "created_at": "2026-11-01T11:45:00Z",
+                                     "html_url": "https://example/c/9"}]
+                s = self.status()
+                self.assertEqual(s["state"], "unavailable")
+                self.assertEqual(s["reason"], common.NO_API_KEY_REASON)
+                self.assertEqual(s["review_url"], "https://example/c/9")
+
+    def test_sync_skip_reason(self):
+        self.completed()
+        reason = "配布元からの同期 PR(内容の検証は policy-gate が行う)"
+        self.gh.comments.append({"id": 9, "user": GHA, "created_at": "2026-11-01T11:45:00Z",
+                                 "body": marker_body(HEAD, "skip", 0) + "\n" + common.encode_reason(reason)})
+        s = self.status()
+        self.assertEqual((s["state"], s["reason"]), ("skipped", reason))
+
     def test_draft(self):
         self.gh.pr["draft"] = True
         self.assertEqual(self.status()["state"], "skipped")

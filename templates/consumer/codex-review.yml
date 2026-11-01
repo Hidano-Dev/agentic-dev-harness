@@ -27,7 +27,9 @@
 #   - full:   初回、または force-push / rebase で前回の SHA が祖先でない
 # - Codex の失敗(出力不正を含む)は 1 回だけ再試行。それでも失敗したら review.fail_open
 #   (既定 true)なら「レビュー不可(fail-open)」をコメントして成功、false なら失敗
-# - secret OPENAI_API_KEY が無ければ notice を出して成功(レビューなし扱い)
+# - secret OPENAI_API_KEY が無ければ「レビュー不可」をコメントし、review.fail_open に従う
+#   (true なら warning を出して成功、false なら失敗。黙って成功はさせない)
+# - Harness Sync の同期 PR は Codex でレビューしない(配布元との完全一致は policy-gate が検証する)
 # - 判定・投稿の本体は配布物の .claude/skills/linear-worker/scripts/ にある。このファイル自体は薄く保つ
 #
 # 必要なもの: secret OPENAI_API_KEY(リポジトリまたは組織)
@@ -121,7 +123,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::notice::secret OPENAI_API_KEY が無いため Codex レビューを省略しました(レビューなし扱い)"
+            # 黙って成功させない(App から action へ移行したリポジトリでレビューが止まったことに気付けるように)。
+            # 下の「Codex unavailable」が unavailable のコメントを投稿し、review.fail_open に従う
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -191,17 +194,24 @@ jobs:
           RESULT_FILE: ${{ steps.check1.outputs.file || steps.check2.outputs.file }}
         run: python3 -I "$SCRIPTS/post_review.py" --kind review --plan "$RUNNER_TEMP/codex-plan.json" --result "$RESULT_FILE" --pr "$PR_NUMBER" --config "$HARNESS_CONFIG"
 
+      # OPENAI_API_KEY が無い / Codex が 2 回とも失敗: unavailable をコメントし、review.fail_open に従う
       - name: Codex unavailable
-        if: ${{ steps.key.outputs.present == 'true' && steps.check1.outputs.file == '' && steps.check2.outputs.file == '' }}
+        if: ${{ steps.key.outputs.present == 'false' || (steps.key.outputs.present == 'true' && steps.check1.outputs.file == '' && steps.check2.outputs.file == '') }}
         env:
           GH_TOKEN: ${{ github.token }}
           FAIL_OPEN: ${{ steps.plan.outputs.fail_open }}
+          KEY_PRESENT: ${{ steps.key.outputs.present }}
         run: |
-          if [ "$FAIL_OPEN" = true ]; then
-            echo "::warning::Codex レビューが 2 回とも失敗したため fail-open で成功させます(review.fail_open)"
-            python3 -I "$SCRIPTS/post_review.py" --kind unavailable --plan "$RUNNER_TEMP/codex-plan.json" --pr "$PR_NUMBER" \
-              --config "$HARNESS_CONFIG" --reason "Codex の実行または出力の検査が 2 回とも失敗"
+          if [ "$KEY_PRESENT" = false ]; then
+            reason="OPENAI_API_KEY が未設定のため Codex レビューを実行できません。組織 secret を設定するか config の review.provider を app / null にしてください"
           else
-            echo "::error::Codex レビューが 2 回とも失敗しました(review.fail_open = false)"
+            reason="Codex の実行または出力の検査が 2 回とも失敗"
+          fi
+          python3 -I "$SCRIPTS/post_review.py" --kind unavailable --plan "$RUNNER_TEMP/codex-plan.json" --pr "$PR_NUMBER" \
+            --config "$HARNESS_CONFIG" --reason "$reason"
+          if [ "$FAIL_OPEN" = true ]; then
+            echo "::warning::$reason(review.fail_open = true のためチェックは成功させます)"
+          else
+            echo "::error::$reason(review.fail_open = false)"
             exit 1
           fi

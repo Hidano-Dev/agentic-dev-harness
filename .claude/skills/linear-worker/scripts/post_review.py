@@ -216,8 +216,10 @@ def notice_body(kind: str, plan: dict, reason: str) -> str:
     else:
         text = (f"### Codex レビュー: レビュー不可(fail-open)(`{head}`)\n\n"
                 f"Codex レビューを実行できませんでした({common.neutralize(reason or '理由不明')})。"
-                f"`review.fail_open` が有効なため、レビューなしでチェックを成功させています。"
-                f"必要ならワークフローを再実行してください。")
+                + ("`review.fail_open` が有効なため、レビューなしでチェックを成功させています。"
+                   if plan.get("fail_open", True) is not False else
+                   "`review.fail_open` が false のため、チェックを失敗させています。")
+                + "原因を解消してからワークフローを再実行してください。")
     return text
 
 
@@ -269,6 +271,9 @@ def post(kind: str, plan: dict, *, repo: str, pr: int, result: dict | None = Non
         findings = (plan.get("prev_findings") or []) if kind == "skip" else []
         round_ = int(plan.get("prev_round", plan.get("round", 0)))
         body = with_markers(notice_body(kind, plan, reason), plan, mode, round_, findings)
+        shown = reason or (plan.get("reason") if kind == "skip" else "") or ""
+        if shown:
+            body += "\n" + common.encode_reason(shown)
         if dry_run:
             return {"posted": False, "dry_run": True, "body": body}
         res = create_comment(repo, pr, body)

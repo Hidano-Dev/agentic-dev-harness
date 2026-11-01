@@ -6,6 +6,8 @@
   - mode:
     - skip: レビューしない(前回の結果を引き継ぐ / レビュー不要)。次のいずれか
       (-) review.provider が null(外部レビューなし)/ app(Codex GitHub App がレビューする)。何も投稿しない
+      (-) Harness Sync の同期 PR(.harness/version を変更し、変更が配布物 + 同期の範囲だけ)。
+          配布元との一致は policy-gate が検証するので、ここでは形だけを見る
       (a) fast track(PR 全体、または前回レビュー済みヘッドからの追加分が `classify_change.py` で 0)
       (b) 前回レビュー済みのヘッドと同じ SHA
       (c) PR 自身の差分(merge-base からの `git diff -U0` の `git patch-id --stable`)が前回と一致
@@ -96,6 +98,54 @@ def is_fast_track(base: str, head: str, config: str) -> bool:
     return proc.returncode == 0
 
 
+# --------------------------------------------------------------------------- 同期 PR
+
+VERSION_REL = ".harness/version"
+MANIFEST_REL = "sync-manifest.json"
+# policy_gate.py と揃える(.harness/version に owned が無いときの配布物 / 同期 PR が変更してよい範囲)
+DEFAULT_OWNED = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md", ".harness/invariants.json"]
+SYNC_EXTRA = [".harness/", ".github/workflows/", "CLAUDE.md", ".kiro/orchestration/config.json"]
+SYNC_REASON = "配布元からの同期 PR(内容の検証は policy-gate が行う)"
+
+
+def _under(path: str, prefixes: list[str]) -> bool:
+    for p in prefixes:
+        q = p.rstrip("/")
+        if q and (path == q or path.startswith(q + "/")):
+            return True
+    return False
+
+
+def _show_json(rev: str, path: str):
+    proc = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True)
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def is_harness_sync_pr(base: str, head: str) -> bool:
+    """取り込み側の Harness Sync の PR の形か(.harness/version を変更し、変更が同期の範囲だけ)。
+
+    内容が配布元と一致するかは検証しない(policy-gate が必須チェックとして検証する)。配布物は
+    PR ヘッドの .harness/version ではなく base のものから取る(PR が範囲を広げられないように)。
+    配布元(base に sync-manifest.json がある)では同期 PR は起きないので対象外。
+    """
+    if subprocess.run(["git", "cat-file", "-e", f"{base}:{MANIFEST_REL}"], capture_output=True).returncode == 0:
+        return False
+    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}"],
+                         check=True, capture_output=True).stdout.decode("utf-8", errors="replace")
+    changed = [p for p in out.split("\0") if p]
+    if VERSION_REL not in changed:
+        return False
+    ver = _show_json(base, VERSION_REL)
+    owned = ver.get("owned") if isinstance(ver, dict) and isinstance(ver.get("owned"), list) else DEFAULT_OWNED
+    allowed = [p for p in owned if isinstance(p, str)] + SYNC_EXTRA
+    return all(_under(p, allowed) for p in changed)
+
+
 # --------------------------------------------------------------------------- GitHub
 
 
@@ -130,6 +180,8 @@ def decide(*, base: str, head: str, markers: list[dict], settings: dict, config:
     provider_reason = common.provider_skip_reason(settings["provider"])
     if provider_reason:  # Codex は呼ばず、PR にも何も投稿しない
         return skip(provider_reason, announce=False)
+    if is_harness_sync_pr(pr_base, head):
+        return skip(SYNC_REASON, announce=True)
     if is_fast_track(pr_base, head, config):
         return skip("PR 全体が fast track(テキスト / コメントのみ)", announce=prev is not None)
     if prev is None:

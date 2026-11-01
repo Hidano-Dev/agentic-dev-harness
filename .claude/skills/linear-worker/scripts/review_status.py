@@ -160,30 +160,31 @@ def status_action(repo: str, pr: int, settings: dict) -> dict:
     p1, total, urls = action_unresolved(fetch_threads(repo, pr))
     out.update(unresolved_p1=p1, unresolved_total=total, unresolved_p1_urls=urls)
     conclusion = run.get("conclusion")
-    if conclusion not in ("success", "neutral", "skipped"):
-        return dict(out, state="unavailable", reason=f"チェック codex-review が {conclusion}")
-
     mine = [m for m in fetch_markers(repo, pr) if m["sha"] == head]
     marker = mine[-1] if mine else None
+    if marker and marker["mode"] == "unavailable":
+        # OPENAI_API_KEY 未設定・Codex の失敗。fail_open なら成功、false なら失敗のチェックと一緒に残る
+        return dict(out, state="unavailable", review_url=marker.get("url"), mode="unavailable",
+                    reason=marker.get("reason") or "Codex を実行できなかった")
+    if conclusion not in ("success", "neutral", "skipped"):
+        return dict(out, state="unavailable", reason=f"チェック codex-review が {conclusion}")
     if marker:
         # スレッドにできなかった(本文にだけ載った)P0 / P1。thread が無い古い記録は inline で代用する
         out.update(review_url=marker.get("url"), mode=marker["mode"], round=marker["round"],
                    outside_diff_p1=sum(1 for f in marker["findings"]
                                        if f.get("severity") in common.BLOCKING
                                        and f.get("thread", f.get("inline")) is False))
-    if marker and marker["mode"] == "unavailable":
-        return dict(out, state="unavailable", reason="Codex を実行できなかった(fail-open でチェックは成功)")
     if p1:
         return dict(out, state="findings", reason=f"未解決の P0 / P1 スレッドが {p1} 件")
     if out.get("outside_diff_p1"):
         return dict(out, state="findings",
                     reason=f"スレッドにできなかった P0 / P1 が {out['outside_diff_p1']} 件(レビュー本文を参照。修正を push する)")
     if marker is None:
-        return dict(out, state="skipped", reason="このヘッドのマーカーなし(fast track / OPENAI_API_KEY なし / 同じヘッドはレビュー済み)")
+        return dict(out, state="skipped", reason="このヘッドのマーカーなし(fast track / 同じヘッドはレビュー済み)")
     if marker["mode"] in ("full", "delta"):
         return dict(out, state="clean", reason="レビュー完了・未解決の P0 / P1 なし")
-    return dict(out, state="skipped",
-                reason={"skip": "前回のレビュー結果を引き継ぎ", "capped": "レビュー回数の上限"}[marker["mode"]])
+    return dict(out, state="skipped", reason=marker.get("reason") or
+                {"skip": "前回のレビュー結果を引き継ぎ", "capped": "レビュー回数の上限"}[marker["mode"]])
 
 
 # --------------------------------------------------------------------------- provider = app
