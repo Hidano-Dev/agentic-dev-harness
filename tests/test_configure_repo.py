@@ -101,8 +101,11 @@ class ConfigureRepoTest(unittest.TestCase):
         self.assertEqual(by_path[f"/repos/{REPO}/git/refs"].body, {"ref": "refs/heads/develop", "sha": SHA})
         self.assertEqual(by_path[f"/repos/{REPO}"].body, {"default_branch": "develop", "allow_auto_merge": True})
         dev = by_path[f"/repos/{REPO}/branches/develop/protection"].body
-        self.assertEqual(dev["required_status_checks"],
-                         {"strict": False, "contexts": ["aggregate-docs", "codex-review", "lint", "policy-gate", "test"]})
+        self.assertFalse(dev["required_status_checks"]["strict"])
+        self.assertEqual(cr.check_names(dev["required_status_checks"]),
+                         ["aggregate-docs", "codex-review", "lint", "policy-gate", "test"])
+        # 推定した CI とハーネスのチェックは GitHub Actions に限定する
+        self.assertTrue(all(c.get("app_id") == cr.GITHUB_ACTIONS_APP_ID for c in dev["required_status_checks"]["checks"]))
         self.assertTrue(dev["required_conversation_resolution"])
         self.assertFalse(dev["allow_force_pushes"])
         self.assertFalse(dev["allow_deletions"])
@@ -167,12 +170,12 @@ class ConfigureRepoTest(unittest.TestCase):
         plan = cr.build_plan(FakeGitHub(routes), REPO, create_develop=False, required_checks=[])
         by_path = {a.path: a.body for a in plan.actions}
         dev = by_path[f"/repos/{REPO}/branches/develop/protection"]
-        self.assertIn("human-added", dev["required_status_checks"]["contexts"])
+        self.assertIn("human-added", cr.check_names(dev["required_status_checks"]))
         self.assertFalse(dev["required_status_checks"]["strict"])
         self.assertEqual(dev["required_pull_request_reviews"]["required_approving_review_count"], 2)
         self.assertTrue(dev["enforce_admins"])
         main = by_path[f"/repos/{REPO}/branches/main/protection"]
-        self.assertEqual(main["required_status_checks"]["contexts"], ["release-check"])
+        self.assertEqual(cr.check_names(main["required_status_checks"]), ["release-check"])
         self.assertEqual(main["required_pull_request_reviews"]["required_approving_review_count"], 2)
         self.assertFalse(main["allow_force_pushes"])
 
@@ -181,7 +184,85 @@ class ConfigureRepoTest(unittest.TestCase):
         plan = cr.build_plan(gh, REPO, create_develop=True, required_checks=["build"],
                              extra_checks=["e2e"], exclude_checks=["aggregate-docs"])
         dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
-        self.assertEqual(dev["required_status_checks"]["contexts"], ["build", "codex-review", "e2e", "policy-gate"])
+        self.assertEqual(cr.check_names(dev["required_status_checks"]), ["build", "codex-review", "e2e", "policy-gate"])
+
+
+FULL_GET_PROTECTION = {
+    "url": "https://api.github.com/repos/owner/app/branches/develop/protection",
+    "required_status_checks": {
+        "url": "...", "strict": True, "contexts": ["test", "legacy-status"], "contexts_url": "...",
+        "checks": [{"context": "test", "app_id": 15368}, {"context": "legacy-status", "app_id": None}],
+    },
+    "required_pull_request_reviews": {
+        "url": "...",
+        "dismissal_restrictions": {"url": "...", "users_url": "...", "teams_url": "...",
+                                   "users": [{"login": "bob", "id": 2}, {"login": "alice", "id": 1}],
+                                   "teams": [{"slug": "core", "id": 9}], "apps": [{"slug": "deploy-bot", "id": 3}]},
+        "bypass_pull_request_allowances": {"users": [{"login": "release-manager"}], "teams": [],
+                                           "apps": [{"slug": "renovate"}]},
+        "dismiss_stale_reviews": True, "require_code_owner_reviews": True,
+        "required_approving_review_count": 2, "require_last_push_approval": True,
+    },
+    "required_signatures": {"url": "...", "enabled": True},
+    "enforce_admins": {"url": "...", "enabled": True},
+    "required_linear_history": {"enabled": True},
+    "allow_force_pushes": {"enabled": False},
+    "allow_deletions": {"enabled": False},
+    "block_creations": {"enabled": True},
+    "required_conversation_resolution": {"enabled": True},
+    "lock_branch": {"enabled": True},
+    "allow_fork_syncing": {"enabled": True},
+    "restrictions": {"url": "...", "users": [{"login": "carol"}], "teams": [{"slug": "ops"}],
+                     "apps": [{"slug": "harness-app"}]},
+}
+
+
+class ProtectionToPutTest(unittest.TestCase):
+    def test_full_get_response_is_carried_over(self):
+        put = cr.protection_to_put(FULL_GET_PROTECTION)
+        self.assertEqual(put, {
+            "required_status_checks": {"strict": True, "checks": [
+                {"context": "legacy-status"}, {"context": "test", "app_id": 15368}]},
+            "enforce_admins": True,
+            "required_pull_request_reviews": {
+                "dismiss_stale_reviews": True, "require_code_owner_reviews": True,
+                "required_approving_review_count": 2, "require_last_push_approval": True,
+                "dismissal_restrictions": {"users": ["alice", "bob"], "teams": ["core"], "apps": ["deploy-bot"]},
+                "bypass_pull_request_allowances": {"users": ["release-manager"], "teams": [], "apps": ["renovate"]},
+            },
+            "restrictions": {"users": ["carol"], "teams": ["ops"], "apps": ["harness-app"]},
+            "required_linear_history": True,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+            "block_creations": True,
+            "required_conversation_resolution": True,
+            "lock_branch": True,
+            "allow_fork_syncing": True,
+        })
+
+    def test_already_configured_full_protection_is_unchanged_by_protection_only(self):
+        p = copy.deepcopy(FULL_GET_PROTECTION)
+        p["required_status_checks"]["checks"] += [{"context": n, "app_id": 15368} for n in cr.HARNESS_CHECKS]
+        routes = base_routes(default="develop", develop=True, allow_auto_merge=True)
+        routes[f"/repos/{REPO}/branches/develop/protection"] = p
+        gh = FakeGitHub(routes)
+        code, out = run(gh, "--protection-only", "--apply")
+        self.assertEqual((code, gh.writes()), (0, []), out)
+
+    def test_adding_checks_keeps_everything_else(self):
+        routes = base_routes(default="develop", develop=True, allow_auto_merge=True)
+        routes[f"/repos/{REPO}/branches/develop/protection"] = copy.deepcopy(FULL_GET_PROTECTION)
+        gh = FakeGitHub(routes)
+        run(gh, "--protection-only", "--apply")
+        body = gh.writes()[0][2]
+        before = cr.protection_to_put(FULL_GET_PROTECTION)
+        self.assertEqual({k: v for k, v in body.items() if k != "required_status_checks"},
+                         {k: v for k, v in before.items() if k != "required_status_checks"})
+        checks = {c["context"]: c for c in body["required_status_checks"]["checks"]}
+        self.assertEqual(checks["test"], {"context": "test", "app_id": 15368})
+        self.assertEqual(checks["legacy-status"], {"context": "legacy-status"})
+        self.assertEqual(checks["policy-gate"], {"context": "policy-gate", "app_id": cr.GITHUB_ACTIONS_APP_ID})
+        self.assertTrue(body["required_status_checks"]["strict"])  # protection-only は strict も変えない
 
 
 class HarnessWorkflowPresenceTest(unittest.TestCase):
@@ -189,7 +270,7 @@ class HarnessWorkflowPresenceTest(unittest.TestCase):
         gh = FakeGitHub(base_routes(harness_workflows=False))
         plan = cr.build_plan(gh, REPO, create_develop=True)
         dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
-        self.assertEqual(dev["required_status_checks"]["contexts"], ["lint", "test"])
+        self.assertEqual(cr.check_names(dev["required_status_checks"]), ["lint", "test"])
         notes = "\n".join(plan.notes)
         for name in cr.HARNESS_CHECKS:
             self.assertIn(name, notes)
@@ -199,7 +280,7 @@ class HarnessWorkflowPresenceTest(unittest.TestCase):
         routes[f"/repos/{REPO}/contents/.github/workflows/docs-policy.yml?ref=main"] = b64("on: pull_request\n")
         plan = cr.build_plan(FakeGitHub(routes), REPO, create_develop=True, required_checks=[])
         dev = next(a.body for a in plan.actions if a.path.endswith("/develop/protection"))
-        self.assertEqual(dev["required_status_checks"]["contexts"], ["aggregate-docs"])
+        self.assertEqual(cr.check_names(dev["required_status_checks"]), ["aggregate-docs"])
 
     def test_result_file(self):
         import tempfile
@@ -237,7 +318,7 @@ class ProtectionOnlyTest(unittest.TestCase):
         writes = gh.writes()
         self.assertEqual([(m, p) for m, p, _ in writes], [("PUT", f"/repos/{REPO}/branches/develop/protection")])
         body = writes[0][2]
-        self.assertEqual(body["required_status_checks"]["contexts"],
+        self.assertEqual(cr.check_names(body["required_status_checks"]),
                          ["aggregate-docs", "codex-review", "policy-gate", "test"])
         self.assertTrue(body["required_conversation_resolution"])
         self.assertEqual(body["required_pull_request_reviews"]["required_approving_review_count"], 0)
@@ -254,7 +335,7 @@ class ProtectionOnlyTest(unittest.TestCase):
         routes[f"/repos/{REPO}/contents/.github/workflows/policy-gate.yml?ref=develop"] = b64("x")
         gh = FakeGitHub(routes)
         run(gh, "--protection-only", "--apply")
-        self.assertEqual(gh.writes()[0][2]["required_status_checks"]["contexts"], ["policy-gate", "test"])
+        self.assertEqual(cr.check_names(gh.writes()[0][2]["required_status_checks"]), ["policy-gate", "test"])
 
     def test_noop_without_two_tier_setup(self):
         gh = FakeGitHub(base_routes())  # 既定ブランチが main のまま

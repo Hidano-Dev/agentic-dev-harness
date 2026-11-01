@@ -223,6 +223,61 @@ class EvaluateTest(unittest.TestCase):
         self.assertTrue(r.ok, r.reason)
         self.assertIn("検証は失敗したが", r.reason)
 
+    def test_adding_sync_manifest_does_not_switch_to_distributor_mode(self):
+        self.branch("feature/fake-distributor")
+        write(self.repo / "sync-manifest.json", '{"owned": []}\n')
+        f = self.repo / ".claude/rules/git-workflow.md"
+        write(f, f.read_text(encoding="utf-8") + "\nlocal tweak\n")
+        r = self.evaluate(commit_all(self.repo), approved=True)
+        self.assertFalse(r.ok)
+        self.assertIn("配布物", r.reason)
+
+    def test_sync_manifest_and_sync_scripts_are_core_in_consumers(self):
+        for path in ("sync-manifest.json", "scripts/sync/apply_sync.py"):
+            with self.subTest(path=path):
+                self.branch(f"feature/{path.replace('/', '-')}")
+                write(self.repo / path, "{}\n")
+                head = commit_all(self.repo)
+                r = self.evaluate(head)
+                self.assertFalse(r.ok)
+                self.assertIn("人間の承認待ち", r.reason)
+                self.assertTrue(self.evaluate(head, approved=True).ok)
+                git(self.repo, "checkout", "-q", "develop")
+
+    def release_setup(self):
+        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["github"].update({"default_branch": "develop", "release_branch": "main"})
+        write(cfg_path, json.dumps(cfg, indent=2))
+        self.base = commit_all(self.repo, "two-tier config")
+        self.branch("release-head")
+        f = self.repo / ".claude/rules/git-workflow.md"
+        write(f, f.read_text(encoding="utf-8") + "\nmerged sync change\n")
+        write(self.repo / "src/app.py", "print('feature')\n")
+        return commit_all(self.repo, "develop contents")
+
+    def test_release_pr_requires_approval_instead_of_hard_fail(self):
+        head = self.release_setup()
+        kw = {"base_ref": "main", "head_ref": "develop", "head_repo": "o/r", "repo": "o/r"}
+        r = pg.evaluate(self.repo, self.base, head, approval_fn=lambda: (False, "なし"),
+                        sync_verify_fn=lambda: self.fail("Release PR では同期検証しない"), **kw)
+        self.assertFalse(r.ok)
+        self.assertIn("Release PR", r.reason)
+        self.assertIn("人間の承認待ち", r.reason)
+        r = pg.evaluate(self.repo, self.base, head, approval_fn=lambda: (True, "承認: alice"),
+                        sync_verify_fn=lambda: (False, []), **kw)
+        self.assertTrue(r.ok, r.reason)
+
+    def test_non_release_refs_keep_hard_fail(self):
+        head = self.release_setup()
+        for kw in ({}, {"base_ref": "develop", "head_ref": "feature/x"},
+                   {"base_ref": "main", "head_ref": "develop", "head_repo": "fork/r", "repo": "o/r"}):
+            with self.subTest(**kw):
+                r = pg.evaluate(self.repo, self.base, head, approval_fn=lambda: (True, "承認"),
+                                sync_verify_fn=lambda: (False, []), **kw)
+                self.assertFalse(r.ok)
+                self.assertIn("配布物", r.reason)
+
     def test_owned_edit_with_extra_paths_is_not_rescued_by_approval(self):
         # .harness/version を触っていても同期の範囲外の変更があれば同期 PR の形ではない → 配布物の直接編集
         self.branch("chore/fake-sync")
@@ -346,6 +401,46 @@ class SyncVerificationIntegrationTest(unittest.TestCase):
         code, out = self.run_gate(head)
         self.assertEqual(code, 1, out)
         self.assertIn("ref が想定外", out)
+
+
+class HarnessCommitCheckParityTest(unittest.TestCase):
+    """policy_gate.check_harness_commit と verify_harness_sync.check_harness_commit が同じ判定をすること。"""
+
+    def test_same_verdicts(self):
+        import verify_harness_sync as vhs
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            harness, v1 = make_harness(tmp / "harness")
+            write(harness / "README.md", "v2\n")
+            v2 = commit_all(harness, "v2")
+            git(harness, "checkout", "-q", "-b", "side", v1)
+            write(harness / "README.md", "side\n")
+            side = commit_all(harness, "side")
+            git(harness, "checkout", "-q", "main")
+            clone = tmp / "clone"
+            git(tmp, "clone", "-q", str(harness), str(clone))   # origin/<ref> がある形
+            repo, base = make_consumer(tmp / "consumer", minimal_config())
+            git(repo, "checkout", "-q", "-b", "synced")
+            with redirect_stderr(io.StringIO()):
+                apply_sync.apply_sync(harness, repo, v2, HARNESS_REPO, "main")
+            synced = commit_all(repo, "sync v2")
+            cases = [
+                # (base, sha, harness_ref, 期待: 問題なしか)
+                (base, v1, "main", True),        # 初回同期
+                (base, v2, "main", True),
+                (base, side, "main", False),     # ref に含まれない
+                (base, v2, "no-such-ref", False),
+                (synced, v1, "main", False),     # 巻き戻し
+                (synced, v2, "main", True),      # 同じ sha
+                (base, "f" * 40, "main", False),  # 存在しない
+            ]
+            for h in (harness, clone):
+                for b, sha, ref, ok in cases:
+                    with self.subTest(harness=h.name, sha=sha[:7], ref=ref, base=b[:7]):
+                        p1 = pg.check_harness_commit(repo, b, b, h, sha, HARNESS_REPO, ref)
+                        p2 = vhs.check_harness_commit(repo, b, b, h, sha, HARNESS_REPO, ref)
+                        self.assertEqual(p1 is None, ok, p1)
+                        self.assertEqual(p1 is None, p2 is None, (p1, p2))
 
 
 if __name__ == "__main__":
