@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     # JSON は機械が読むので、端末のコードページ(Windows の cp932 等)によらず UTF-8 で出す
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+            stream.reconfigure(encoding="utf-8", newline="\n")
 
     try:
         top = git(["rev-parse", "--show-toplevel"], Path.cwd()).stdout.decode().strip()
