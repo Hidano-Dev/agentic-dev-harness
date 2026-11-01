@@ -120,6 +120,20 @@ class ActionProviderTest(unittest.TestCase):
         self.assertEqual(s["unresolved_p1"], 2)
         self.assertEqual(s["outside_diff_p1"], 1)
 
+    def test_body_only_p1_is_findings(self):
+        self.completed()
+        f = {"severity": "P1", "path": "a", "line": 1, "title": "t", "body": "b"}
+        self.add_review_marker(HEAD, findings=[dict(f, inline=False, thread=False)])
+        s = self.status()
+        self.assertEqual((s["state"], s["unresolved_p1"], s["outside_diff_p1"]), ("findings", 0, 1))
+        self.assertIn("スレッドにできなかった", s["reason"])
+        # ファイル単位のスレッドにでき、それが resolve 済みなら clean
+        self.gh.reviews = []
+        self.add_review_marker(HEAD, findings=[dict(f, inline=False, thread=True)])
+        self.gh.threads = [gha_thread("P1", resolved=True)]
+        s = self.status()
+        self.assertEqual((s["state"], s["outside_diff_p1"]), ("clean", 0))
+
     def test_skip_marker_and_old_threads(self):
         self.completed()
         self.add_review_marker(OLD)

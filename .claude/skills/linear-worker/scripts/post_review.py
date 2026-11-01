@@ -3,7 +3,10 @@
 
 - `--kind review`(既定): Codex の出力 JSON(codex-review-schema.json)を **1 件の PR review
   (event=COMMENT)** として投稿する。
-  - P0 / P1 は該当行へのインラインコメント(= 解決が必要なスレッド)。行が PR の差分外なら本文へ
+  - P0 / P1 は該当行へのインラインコメント(= 解決が必要なスレッド)。行が PR の差分外なら
+    ファイル単位のコメント(subject_type=file)にする。ファイル自体が差分外なら PR の最初の変更ファイルに
+    付け、実際の場所を本文の先頭に書く。GitHub がそれも拒否した時だけ本文に載せる
+    (review_status.py は、スレッドの無い P0 / P1 が残る間 state=findings を返す)
   - P2 以下は本文の折りたたみ一覧(スレッドを作らない)
   - 指摘ゼロでも「指摘なし」の review を必ず投稿する
   - 本文の末尾に隠しマーカー(review_plan.py / review_status.py が読む)
@@ -162,24 +165,38 @@ def embed_findings(findings: list[dict]) -> str:
     return text
 
 
-def review_body(plan: dict, result: dict, inline: list[dict], outside: list[dict], minor: list[dict]) -> str:
+def file_comment_body(f: dict, target: str) -> str:
+    """差分外の P0 / P1 をファイル単位のスレッドにする時の本文(実際の場所を先頭に書く)。"""
+    if target == f["path"]:
+        where = f"場所: {_loc(f)}(PR の差分外の行のため、ファイル単位のスレッドにしています)"
+    else:
+        where = (f"実際の場所: {_loc(f)}(このファイルは PR の差分に含まれないため、"
+                 f"PR の最初の変更ファイル `{common.neutralize(target)}` にスレッドを作成しています)")
+    return f"{where}\n\n" + inline_body(f)
+
+
+def review_body(plan: dict, result: dict, inline: list[dict], filed: list[dict], body_only: list[dict],
+                minor: list[dict]) -> str:
     mode_label = {"full": "初回 / 全体", "delta": "再レビュー / 前回からの差分"}.get(plan["mode"], plan["mode"])
     head, base = plan["head"], plan["base"]
     parts = [f"### Codex レビュー(round {plan['round']} / {mode_label})",
              f"対象: `{head[:7]}`(差分: `{base[:7]}..{head[:7]}`)", "",
              _clip(result["summary"], 5_000) or "(summary なし)", ""]
-    blocking = len(inline) + len(outside)
+    blocking = len(inline) + len(filed) + len(body_only)
     if blocking == 0 and not minor:
         parts.append("**指摘なし**")
     elif blocking == 0:
         parts.append(f"**P0 / P1 の指摘なし**(P2 以下 {len(minor)} 件。スレッドは作りません)")
     else:
-        parts.append(f"**P0 / P1: {blocking} 件**"
-                     + (f"(うち {len(inline)} 件は該当行にスレッドを作成。修正または理由付きの返信のうえ resolve してください)"
-                        if inline else ""))
-    if outside:
-        parts += ["", "#### 差分外の行への P0 / P1(スレッドにできなかったもの)"]
-        for f in outside:
+        parts.append(f"**P0 / P1: {blocking} 件**(該当行 {len(inline)} 件・ファイル単位 {len(filed)} 件のスレッドを作成。"
+                     f"修正または理由付きの返信のうえ resolve してください)")
+    if filed:
+        parts += ["", "#### 差分外の行への P0 / P1(ファイル単位のスレッドを作成)"]
+        for f in filed:
+            parts.append(f"- **[{f['severity']}] {_clip(f['title'], 300)}** — {_loc(f)}")
+    if body_only:
+        parts += ["", "#### スレッドにできなかった P0 / P1(マージ前に必ず対応し、修正を push してください)"]
+        for f in body_only:
             parts.append(f"- **[{f['severity']}] {_clip(f['title'], 300)}** — {_loc(f)}<br>{_clip(f['body'], ITEM_BODY_LIMIT)}")
     if minor:
         parts += ["", f"<details><summary>P2 以下の指摘 {len(minor)} 件(スレッドは作りません。対応は任意)</summary>", ""]
@@ -244,6 +261,16 @@ def create_comment(repo: str, pr: int, body: str) -> dict:
     return common.gh_api(f"repos/{repo}/issues/{int(pr)}/comments", method="POST", body={"body": body}) or {}
 
 
+def create_file_comment(repo: str, pr: int, head: str, path: str, body: str) -> dict:
+    """ファイル単位のレビューコメント(subject_type=file)。解決が必要なスレッドになる。"""
+    return common.gh_api(f"repos/{repo}/pulls/{int(pr)}/comments", method="POST",
+                         body={"commit_id": head, "path": path, "subject_type": "file", "body": body}) or {}
+
+
+def fetch_review_comments(repo: str, pr: int) -> list[dict]:
+    return common.gh_api_list(f"repos/{repo}/pulls/{int(pr)}/comments")
+
+
 # --------------------------------------------------------------------------- 投稿
 
 
@@ -274,29 +301,55 @@ def post(kind: str, plan: dict, *, repo: str, pr: int, result: dict | None = Non
 
     commentable = commentable_lines(plan["merge_base"], plan["head"])
     inline, outside, minor = split_findings(result["findings"], commentable)
+    filed: list[dict] = []  # ファイル単位のスレッドにできた差分外の P0 / P1(残りの outside は本文のみ)
 
-    def payload_for(inline_: list[dict], outside_: list[dict]) -> dict:
-        recorded = [dict(f, inline=f in inline_) for f in result["findings"]]
-        body = with_markers(review_body(plan, result, inline_, outside_, minor), plan, mode, plan["round"], recorded)
+    def payload_for(inline_: list[dict]) -> dict:
+        recorded = [dict(f, inline=f in inline_, thread=f in inline_ or f in filed) for f in result["findings"]]
+        body_only = [f for f in outside if f not in filed]
+        body = with_markers(review_body(plan, result, inline_, filed, body_only, minor),
+                            plan, mode, plan["round"], recorded)
         return {"commit_id": plan["head"], "event": "COMMENT", "body": body,
                 "comments": [{"path": f["path"], "line": f["line"], "side": "RIGHT", "body": inline_body(f)}
                              for f in inline_]}
 
-    payload = payload_for(inline, outside)
     if dry_run:
-        return {"posted": False, "dry_run": True, "payload": payload}
+        return {"posted": False, "dry_run": True, "payload": payload_for(inline)}
+    existing_bodies = {(c.get("path"), c.get("body")) for c in fetch_review_comments(repo, pr)
+                       if common.login_of(c.get("user")) in common.TRUSTED_AUTHORS
+                       and c.get("commit_id") == plan["head"]}
+
+    def file_thread(f: dict) -> bool:
+        """差分外の P0 / P1 をファイル単位のレビューコメント(= 解決が必要なスレッド)にする。"""
+        target = f["path"] if f["path"] in commentable else next(iter(commentable), None)
+        if target is None:
+            return False
+        body = file_comment_body(f, target)
+        if (target, body) in existing_bodies:  # ジョブの再実行で同じスレッドを重ねない
+            return True
+        try:
+            create_file_comment(repo, pr, plan["head"], target, body)
+        except common.GitHubError as e:
+            print(f"::warning::ファイル単位のコメントを投稿できなかったため本文に載せる({f['path']}): {e}",
+                  file=sys.stderr)
+            return False
+        return True
+
+    filed.extend(f for f in outside if file_thread(f))
     try:
-        res = create_review(repo, pr, payload)
+        res = create_review(repo, pr, payload_for(inline))
     except common.GitHubError as e:
         if not inline:
             raise
-        # 行の対応が GitHub の差分とずれていた(422 等)。全件を本文に寄せて投稿し直す
-        print(f"::warning::インラインコメント付きの review を投稿できなかったため本文にまとめる: {e}", file=sys.stderr)
-        inline, outside = [], outside + inline
-        payload = payload_for(inline, outside)
-        res = create_review(repo, pr, payload)
+        # 行の対応が GitHub の差分とずれていた(422 等)。ファイル単位のスレッドに切り替えて投稿し直す
+        print(f"::warning::インラインコメント付きの review を投稿できなかったためファイル単位のコメントにする: {e}",
+              file=sys.stderr)
+        outside = outside + inline
+        filed.extend(f for f in inline if file_thread(f))
+        inline = []
+        res = create_review(repo, pr, payload_for(inline))
     return {"posted": True, "kind": "review", "url": res.get("html_url"), "inline": len(inline),
-            "outside_diff": len(outside), "minor": len(minor)}
+            "file_level": len(filed), "outside_diff": len(outside), "body_only": len(outside) - len(filed),
+            "minor": len(minor)}
 
 
 def main(argv: list[str] | None = None) -> int:
