@@ -1,6 +1,7 @@
 """resolve_conflicts.py のテスト。一時ディレクトリに実リポジトリを作り、実際に git merge でコンフリクトさせる。"""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -208,6 +209,47 @@ class ResolveConflictsTest(unittest.TestCase):
             cfg.unlink()
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.repo.read("mod.py"), b"x = 1\ny = 2\nz = 3\n")
+
+    def test_txt_not_resolved_by_default(self):
+        base = b"a\n"
+        self.repo.setup({"notes.txt": base}, {"notes.txt": base + b"o\n"}, {"notes.txt": base + b"t\n"})
+        rc, out = self.repo.run()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["reasons"]["notes.txt"], "対象外の拡張子")
+
+    def test_non_doc_basenames_never_resolved(self):
+        names = ["requirements-dev.txt", "sub/CMakeLists.txt", "CLAUDE.md", "docs/AGENTS.md", "x/SKILL.md"]
+        self.repo.setup(
+            {n: b"a\n" for n in names},
+            {n: b"a\no\n" for n in names},
+            {n: b"a\nt\n" for n in names},
+        )
+        cfg = self.repo.dir.parent / f"{self.repo.dir.name}-config.json"
+        cfg.write_text(json.dumps({"conflicts": {"auto_resolve_extensions": [".md", ".txt"]}}), encoding="utf-8")
+        try:
+            rc, out = self.repo.run("--config", str(cfg))
+        finally:
+            cfg.unlink()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out["resolved"], [])
+        self.assertEqual(sorted(out["unresolved"]), sorted(names))
+        self.assertEqual(self.repo.unmerged(), set(names))
+
+    def test_non_doc_basename_matches_classify_change(self):
+        scripts = SCRIPT.parent
+        mods = {}
+        for name in ("resolve_conflicts", "classify_change"):
+            spec = importlib.util.spec_from_file_location(f"_t_{name}", scripts / f"{name}.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod  # dataclass が sys.modules を参照するため
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                sys.modules.pop(spec.name, None)
+            mods[name] = mod
+        a = mods["resolve_conflicts"].NON_DOC_BASENAME
+        b = mods["classify_change"].NON_DOC_BASENAME
+        self.assertEqual((a.pattern, a.flags), (b.pattern, b.flags))
 
     def test_dry_run_does_not_write(self):
         base = b"# D\n"

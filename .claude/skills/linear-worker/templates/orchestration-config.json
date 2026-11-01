@@ -40,7 +40,7 @@
   },
   "conflicts": {
     "auto_resolve": true,
-    "auto_resolve_extensions": [".md", ".markdown", ".rst", ".adoc", ".asciidoc", ".txt"],
+    "auto_resolve_extensions": [".md", ".markdown", ".rst", ".adoc", ".asciidoc"],
     "label": "needs-conflict-resolution"
   },
   "fast_track": {
