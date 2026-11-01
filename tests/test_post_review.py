@@ -203,6 +203,16 @@ class PostReviewTest(GitRepoTestCase):
         self.assertEqual(out["file_level"], 1)
         self.assertEqual(self.kinds("file"), [])
 
+    def test_uses_precomputed_commentable_without_git(self):
+        plan = dict(self.plan, merge_base="0" * 40, head=self.head,
+                    commentable={"z.py": [5], "src/renamed.py": [10]})
+        with mock.patch.object(post_review, "commentable_lines", side_effect=AssertionError("git を実行した")):
+            out = post_review.post("review", plan, repo="o/r", pr=5, result=self.result([
+                {"severity": "P1", "path": "z.py", "line": 5, "title": "a", "body": "b"},
+                {"severity": "P1", "path": "other.py", "line": 1, "title": "c", "body": "d"}]))
+        self.assertEqual((out["inline"], out["file_level"]), (1, 1))
+        self.assertEqual(self.kinds("file")[0]["path"], "z.py")  # plan の順序で最初の変更ファイル
+
     def test_no_findings_still_posts(self):
         out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([]))
         self.assertTrue(out["posted"])

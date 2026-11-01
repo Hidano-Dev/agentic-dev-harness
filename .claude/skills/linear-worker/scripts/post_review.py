@@ -92,44 +92,19 @@ def load_result(path: Path) -> dict:
 # --------------------------------------------------------------------------- 差分(コメント可能な行)
 
 
-_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
-
-
-def _unquote_path(p: str) -> str:
-    """git が引用符で囲んだパス(core.quotepath=false なので非 ASCII はそのまま。\\" \\\\ 等だけ戻す)。"""
-    if len(p) >= 2 and p.startswith('"') and p.endswith('"'):
-        return re.sub(r"\\(.)", lambda m: _ESCAPES.get(m.group(1), m.group(1)), p[1:-1])
-    return p
-
-
 def commentable_lines(base: str, head: str) -> dict[str, set[int]]:
-    """GitHub の PR 差分でインラインコメントを付けられる行(ヘッド側の行番号。追加行 + 文脈行)。"""
-    out = subprocess.run(
-        ["git", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
-         "-M", "--src-prefix=a/", "--dst-prefix=b/", base, head],
-        check=True, capture_output=True).stdout.decode("utf-8", errors="replace")
-    lines: dict[str, set[int]] = {}
-    current: set[int] | None = None
-    n = 0
-    in_hunk = False
-    for ln in out.split("\n"):
-        if ln.startswith("diff --git "):
-            current, in_hunk = None, False
-            continue
-        if not in_hunk and ln.startswith("+++ "):
-            target = _unquote_path(ln[4:].rstrip("\t"))
-            current = lines.setdefault(target[2:], set()) if target.startswith("b/") else None
-            continue
-        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", ln)
-        if m:
-            n, in_hunk = int(m.group(1)), True
-            continue
-        if not in_hunk or current is None:
-            continue
-        if ln.startswith((" ", "+")):  # "-" と "\ No newline" はヘッド側の行を進めない
-            current.add(n)
-            n += 1
-    return lines
+    return common.commentable_lines(base, head)
+
+
+def plan_commentable(plan: dict) -> dict[str, set[int]]:
+    """review_plan.py が Codex の実行前に計算した行(無ければここで git から計算する)。
+
+    Codex は作業ツリー(.git を含み得る)に書き込めるので、Codex の後に PR ヘッドの作業ツリーで
+    git を実行しなくて済むよう、ワークフローでは plan の値を使う。
+    """
+    if isinstance(plan.get("commentable"), dict):
+        return {str(p): {int(n) for n in v} for p, v in plan["commentable"].items()}
+    return commentable_lines(plan["merge_base"], plan["head"])
 
 
 # --------------------------------------------------------------------------- 本文
@@ -299,7 +274,7 @@ def post(kind: str, plan: dict, *, repo: str, pr: int, result: dict | None = Non
         res = create_comment(repo, pr, body)
         return {"posted": True, "kind": kind, "url": res.get("html_url")}
 
-    commentable = commentable_lines(plan["merge_base"], plan["head"])
+    commentable = plan_commentable(plan)
     inline, outside, minor = split_findings(result["findings"], commentable)
     filed: list[dict] = []  # ファイル単位のスレッドにできた差分外の P0 / P1(残りの outside は本文のみ)
 

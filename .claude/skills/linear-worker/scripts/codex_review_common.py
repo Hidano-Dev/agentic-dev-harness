@@ -33,6 +33,16 @@ DEFAULT_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 # capped = 回数上限でレビューしなかった、unavailable = 実行できなかった(fail-open)
 MODES = ("full", "delta", "skip", "capped", "unavailable")
 REVIEWED_MODES = ("full", "delta", "skip")  # 次回の比較基準(prev)になり得るもの
+PROVIDERS = ("action", "app", None)  # review.provider。None = 外部レビューなし
+
+
+def provider_skip_reason(provider: str | None) -> str | None:
+    """codex-review.yml(provider=action)以外でレビューしない理由。action なら None。"""
+    if provider is None:
+        return "外部レビューなし(review.provider=null)"
+    if provider == "app":
+        return "review.provider=app(Codex GitHub App がレビューする)"
+    return None
 
 REVIEW_MARKER = "harness-codex-review"
 FINDINGS_MARKER = "harness-codex-findings"
@@ -85,9 +95,10 @@ def review_settings(cfg: dict) -> dict:
             raise ValueError(f"config の {key} が文字列ではない")
         return value
 
-    provider = review.get("provider") or "action"
-    if provider not in ("action", "app"):
-        raise ValueError("config の review.provider は action / app のどちらか")
+    # キーが無ければ action。明示的な null は「外部レビューなし」(migrate_config / render_config が書く)
+    provider = review.get("provider", "action")
+    if provider not in PROVIDERS:
+        raise ValueError("config の review.provider は action / app / null のいずれか")
     return {
         "provider": provider,
         "max_rounds": positive_int(action.get("max_rounds"), 3, "review.action.max_rounds"),
@@ -190,6 +201,51 @@ def collect_markers(issue_comments: list[dict], reviews: list[dict]) -> list[dic
             out.append(m)
     out.sort(key=lambda m: (m["at"], m["source"], m["order"]))
     return out
+
+
+# --------------------------------------------------------------------------- 差分(コメント可能な行)
+
+_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\"}
+
+
+def _unquote_path(p: str) -> str:
+    """git が引用符で囲んだパス(core.quotepath=false なので非 ASCII はそのまま。\\" \\\\ 等だけ戻す)。"""
+    if len(p) >= 2 and p.startswith('"') and p.endswith('"'):
+        return re.sub(r"\\(.)", lambda m: _ESCAPES.get(m.group(1), m.group(1)), p[1:-1])
+    return p
+
+
+def commentable_lines(base: str, head: str) -> dict[str, set[int]]:
+    """GitHub の PR 差分でインラインコメントを付けられる行(ヘッド側の行番号。追加行 + 文脈行)。
+
+    キーの順序は差分に現れる順(先頭が「PR の最初の変更ファイル」)。
+    """
+    out = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+         "-M", "--src-prefix=a/", "--dst-prefix=b/", base, head],
+        check=True, capture_output=True).stdout.decode("utf-8", errors="replace")
+    lines: dict[str, set[int]] = {}
+    current: set[int] | None = None
+    n = 0
+    in_hunk = False
+    for ln in out.split("\n"):
+        if ln.startswith("diff --git "):
+            current, in_hunk = None, False
+            continue
+        if not in_hunk and ln.startswith("+++ "):
+            target = _unquote_path(ln[4:].rstrip("\t"))
+            current = lines.setdefault(target[2:], set()) if target.startswith("b/") else None
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", ln)
+        if m:
+            n, in_hunk = int(m.group(1)), True
+            continue
+        if not in_hunk or current is None:
+            continue
+        if ln.startswith((" ", "+")):  # "-" と "\ No newline" はヘッド側の行を進めない
+            current.add(n)
+            n += 1
+    return lines
 
 
 # --------------------------------------------------------------------------- 時刻

@@ -22,7 +22,8 @@ provider:
           post_review.py のマーカーから判定する
   app     従来の Codex GitHub App(後方互換)。依頼コメント以降のボットの review(commit_id == head)・
           summary コメント・+1(clean)/ eyes(running)リアクションから判定する
-既定は config の review.provider(無ければ action)。
+既定は config の review.provider(キーが無ければ action)。null(外部レビューなし)なら
+API を呼ばずに state=skipped を返す。
 
 終了コード: 0 = 判定できた(state は JSON を見る)、2 = エラー(GitHub API / config)。
 標準ライブラリのみ使用。
@@ -278,7 +279,12 @@ def main(argv: list[str] | None = None) -> int:
         settings = common.review_settings(cfg)
         repo = common.resolve_repo(a.repo, cfg)
         provider = a.provider or settings["provider"]
-        result = (status_action if provider == "action" else status_app)(repo, a.pr, settings)
+        if provider is None:  # review.provider = null: 外部レビューなし(GitHub API も呼ばない)
+            result = {"provider": None, "state": "skipped", "head": None, "review_url": None,
+                      "unresolved_p1": 0, "unresolved_total": 0,
+                      "reason": common.provider_skip_reason(None)}
+        else:
+            result = (status_action if provider == "action" else status_app)(repo, a.pr, settings)
     except (ValueError, OSError, KeyError, json.JSONDecodeError, common.GitHubError) as e:
         print(json.dumps({"state": "error", "reason": str(e)}, ensure_ascii=False))
         return 2
