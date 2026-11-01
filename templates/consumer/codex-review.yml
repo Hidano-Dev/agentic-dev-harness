@@ -7,7 +7,8 @@
 # 指摘の有無ではない(P0 / P1 は該当行の未解決スレッド + "Require conversation resolution" で止める)。
 #
 # - 同じ PR のレビューは concurrency で常に最新ヘッドの 1 本だけ(古いヘッドの実行は取り消す)
-# - draft と fork からの PR はスキップ(fork には secret が渡らない)
+# - draft はスキップ。fork からの PR は失敗させる(secret が渡らずレビューできないため。
+#   スキップだと必須チェックが成功扱いになる)。メンテナーがレビューして手動でマージする
 # - 何をするか(skip / capped / delta / full)は review_plan.py が決める。前回の情報は
 #   post_review.py が PR に埋めた隠しマーカー(github-actions[bot] のものだけ信頼)から読む
 #   - skip:   fast track、または前回レビュー済みのヘッドから PR 自身の差分が変わっていない
@@ -17,8 +18,9 @@
 # - Codex の失敗(出力不正を含む)は 1 回だけ再試行。それでも失敗したら review.fail_open
 #   (既定 true)なら「レビュー不可(fail-open)」をコメントして成功、false なら失敗
 # - secret OPENAI_API_KEY が無ければ notice を出して成功(レビューなし扱い)
-# - 判定・投稿の本体は配布物の .claude/skills/linear-worker/scripts/ にある。
-#   このファイル自体は薄く保つ
+# - 判定・投稿の本体は配布物の .claude/skills/linear-worker/scripts/ にある。このファイル自体は薄く保つ
+# - レビューする側(スクリプト・プロンプト雛形・スキーマ・config)は PR の base コミットから取り出して使う
+#   (PR が自分をレビューするコードを書き換えられないように)。base にまだ無い初回導入時だけ PR ヘッドのものを使う
 #
 # 必要なもの: secret OPENAI_API_KEY(リポジトリまたは組織)
 # 配置先: .github/workflows/codex-review.yml
@@ -39,15 +41,25 @@ concurrency:
 
 jobs:
   codex-review:
-    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
+    # draft はスキップ(draft はマージできない。ready_for_review で走る)。fork は下の手順で失敗させる
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      SCRIPTS: .claude/skills/linear-worker/scripts
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      THIS_REPO: ${{ github.repository }}
     steps:
+      # fork には secret が渡らずレビューできない。スキップ(= 必須チェックが成功扱い)にせず失敗させる
+      - name: Reject fork PRs
+        run: |
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::fork からの PR は自動レビューしません。メンテナーがレビューして手動でマージしてください(fork PRs are not auto-reviewed; a maintainer must review and merge manually)"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -55,17 +67,43 @@ jobs:
           # Codex に作業ツリーを渡すので、トークンを .git/config に残さない
           persist-credentials: false
 
+      # レビューする側のコード(スクリプト・プロンプト・スキーマ・config)は PR の base から取る。
+      # PR が自分をレビューするコードや設定を書き換えられないようにするため。レビュー対象は
+      # 引き続き作業ツリー(PR のヘッド)
+      - name: Prepare reviewer from the base commit
+        id: harness
+        run: |
+          rel=.claude/skills/linear-worker
+          dir="$RUNNER_TEMP/harness-base"
+          mkdir -p "$dir"
+          if git cat-file -e "$BASE_SHA:$rel/scripts/review_plan.py" 2>/dev/null; then
+            git archive "$BASE_SHA" "$rel" | tar -x -C "$dir"
+          elif [ -f "$rel/scripts/review_plan.py" ]; then
+            echo "::notice::base($BASE_SHA)に $rel/scripts/review_plan.py が無いため、PR ヘッドのスクリプトを使います(初回導入)"
+            mkdir -p "$dir/$rel"
+            cp -R "$rel/." "$dir/$rel/"
+          else
+            echo "::notice::$rel/scripts/review_plan.py が無いためレビューをスキップしました(Harness Sync で配布物を最新化してください)"
+            exit 0
+          fi
+          # base に config が無ければ存在しないパスを渡す(= 既定値)
+          if git cat-file -e "$BASE_SHA:.kiro/orchestration/config.json" 2>/dev/null; then
+            git show "$BASE_SHA:.kiro/orchestration/config.json" > "$RUNNER_TEMP/harness-config.json"
+          fi
+          echo "dir=$dir/$rel" >> "$GITHUB_OUTPUT"
+          {
+            echo "SCRIPTS=$dir/$rel/scripts"
+            echo "HARNESS_CONFIG=$RUNNER_TEMP/harness-config.json"
+          } >> "$GITHUB_ENV"
+
       - name: Plan
         id: plan
+        if: ${{ steps.harness.outputs.dir != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ ! -f "$SCRIPTS/review_plan.py" ]; then
-            echo "::notice::$SCRIPTS/review_plan.py が無いためレビューをスキップしました(Harness Sync で配布物を最新化してください)"
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           python3 "$SCRIPTS/review_plan.py" --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --config "$HARNESS_CONFIG" \
             --output "$RUNNER_TEMP/codex-plan.json" --prompt-out "$RUNNER_TEMP/codex-prompt.md" --github-output
 
       - name: Announce skip / cap
@@ -98,7 +136,7 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: ${{ runner.temp }}/codex-prompt.md
           output-file: ${{ runner.temp }}/codex-result-1.json
-          output-schema-file: .claude/skills/linear-worker/templates/codex-review-schema.json
+          output-schema-file: ${{ steps.harness.outputs.dir }}/templates/codex-review-schema.json
           permission-profile: ":workspace"
           model: ${{ steps.plan.outputs.model }}
           effort: ${{ steps.plan.outputs.effort }}
@@ -126,7 +164,7 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: ${{ runner.temp }}/codex-prompt.md
           output-file: ${{ runner.temp }}/codex-result-2.json
-          output-schema-file: .claude/skills/linear-worker/templates/codex-review-schema.json
+          output-schema-file: ${{ steps.harness.outputs.dir }}/templates/codex-review-schema.json
           permission-profile: ":workspace"
           model: ${{ steps.plan.outputs.model }}
           effort: ${{ steps.plan.outputs.effort }}
