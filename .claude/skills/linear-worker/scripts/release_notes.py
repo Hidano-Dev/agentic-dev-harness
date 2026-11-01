@@ -15,7 +15,8 @@ Release PR の本文をこの出力で作成・更新する。人間はこの PR
   `[A-Z]+-\\d+` から取る(`UTF-8` のような規格名は除く)
 - 変更ファイルの分類(`git diff --name-only <base>...<head>`。上から順に最初に当たったもの):
   1. 配布物: sync manifest(リポジトリ直下の `sync-manifest.json`、無ければ `.harness/sync-manifest.json`)の
-     `owned` と `workflows` のキー・値。manifest が無ければ既定値
+     `owned` と `workflows` のキー・値。manifest が無ければ(取り込み側)`<head>:.harness/version` の
+     `owned`(あれば `workflows` も)、それも無ければ既定値(配布元の sync-manifest.json と同じ)
   2. コア: config の `auto_merge.protected_paths`(無ければ既定値)
   3. 指示文: 任意の階層の `CLAUDE.md` / `AGENTS.md` / `SKILL.md`、`.claude/` `.agents/` `.cursor/` 配下
 - パスの一致: `/` で終わる値はディレクトリ接頭辞、それ以外は完全一致またはその配下
@@ -45,8 +46,10 @@ DEFAULT_PROTECTED_PATHS = [
 DEFAULT_OWNED = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md", ".harness/invariants.json"]
 DEFAULT_WORKFLOWS = {
     f"templates/consumer/{name}.yml": f".github/workflows/{name}.yml"
-    for name in ("harness-sync", "docs-policy", "codex-review", "policy-gate", "conflict-sweeper", "promote")
+    for name in ("harness-sync", "docs-policy", "codex-review", "policy-gate", "conflict-sweeper", "promote",
+                 "policy-gate-recheck", "policy-gate-relabel")
 }
+VERSION_REL = ".harness/version"
 INSTRUCTION_NAMES = {"CLAUDE.md", "AGENTS.md", "SKILL.md"}
 INSTRUCTION_PREFIXES = [".claude/", ".agents/", ".cursor/"]
 BACK_MERGE_PREFIX = "back-merge/"
@@ -86,7 +89,21 @@ def str_list(value, where: str) -> list[str]:
     return value
 
 
-def load_rules(config: Path, manifest: Path | None) -> dict:
+def version_at(ref: str) -> dict | None:
+    """`<ref>:.harness/version` の JSON。無ければ None。"""
+    r = subprocess.run(["git", "show", f"{ref}:{VERSION_REL}"], capture_output=True)
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise NotesError(f"{ref}:{VERSION_REL} が JSON として不正")
+    if not isinstance(data, dict):
+        raise NotesError(f"{ref}:{VERSION_REL} の最上位が JSON オブジェクトではない")
+    return data
+
+
+def load_rules(config: Path, manifest: Path | None, head: str | None = None) -> dict:
     cfg = load_json(config) or {}
     am = cfg.get("auto_merge") or {}
     protected = str_list(am.get("protected_paths", DEFAULT_PROTECTED_PATHS), f"{config} の auto_merge.protected_paths")
@@ -97,6 +114,15 @@ def load_rules(config: Path, manifest: Path | None) -> dict:
     man = load_json(manifest) if manifest else None
     if man is None:
         owned, workflows = list(DEFAULT_OWNED), DEFAULT_WORKFLOWS
+        # 取り込み側: 同期が書いた head の .harness/version の owned(あれば workflows も)を使う
+        ver = version_at(head) if head else None
+        if ver is not None:
+            if "owned" in ver:
+                owned = list(str_list(ver["owned"], f"{head}:{VERSION_REL} の owned"))
+            if "workflows" in ver:
+                workflows = ver["workflows"]
+                if not isinstance(workflows, dict):
+                    raise NotesError(f"{head}:{VERSION_REL} の workflows がオブジェクトではない")
     else:
         owned = list(str_list(man.get("owned", []), f"{manifest} の owned"))
         workflows = man.get("workflows") or {}
@@ -254,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", newline="\n")
     try:
-        rules = load_rules(Path(a.config), Path(a.manifest) if a.manifest else None)
+        rules = load_rules(Path(a.config), Path(a.manifest) if a.manifest else None, a.head)
         text = render(a.base, a.head, rules)
     except (NotesError, OSError, ValueError) as e:
         print(f"::error::{e}", file=sys.stderr)

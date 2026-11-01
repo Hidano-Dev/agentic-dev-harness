@@ -161,6 +161,24 @@ class ReleaseNotesTest(unittest.TestCase):
         self.assertIn("コア・配布物・指示文の変更はありません。", text)
         self.assertIn("#1 Doc", section(text, "### HID-1\n"))
 
+    def test_owned_from_harness_version_at_head(self):
+        # sync-manifest.json の無い取り込み側: head の .harness/version の owned を配布物として扱う
+        self.repo.merge_pr(1, "chore/harness-sync-abc", "Sync", {
+            ".harness/version": json.dumps({"owned": ["tools/shared", "docs/rules.md"], "repo": "x/y",
+                                            "ref": "main", "sha": "0"}),
+            "tools/shared/a.sh": "a\n", "docs/rules.md": "r\n",
+            ".claude/skills/linear-worker/x.py": "x\n", ".github/workflows/promote.yml": "x\n",
+        })
+        rc, out = self.repo.run()
+        self.assertEqual(rc, 0, out)
+        owned = section(out, "### 配布物")
+        self.assertIn("`tools/shared/a.sh`", owned)
+        self.assertIn("`docs/rules.md`", owned)
+        self.assertIn("`.github/workflows/promote.yml`", owned)  # workflows が無いので既定の配置先
+        # owned が置き換わるので既定の owned は配布物ではなくなる(指示文として出る)
+        self.assertNotIn("linear-worker/x.py", owned)
+        self.assertIn("`.claude/skills/linear-worker/x.py`", section(out, "### 指示文"))
+
     def test_bad_ref_is_error(self):
         r = subprocess.run([sys.executable, "-I", str(SCRIPT), "--base", "nope", "--head", "develop"],
                            cwd=self.repo.dir, capture_output=True)
@@ -168,6 +186,11 @@ class ReleaseNotesTest(unittest.TestCase):
 
 
 class UnitTest(unittest.TestCase):
+    def test_defaults_match_sync_manifest(self):
+        manifest = json.loads((SCRIPT.parents[4] / "sync-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(release_notes.DEFAULT_OWNED, manifest["owned"])
+        self.assertEqual(release_notes.DEFAULT_WORKFLOWS, manifest["workflows"])
+
     def test_issue_ids(self):
         f = release_notes.issue_ids
         self.assertEqual(f("Add x", "feature/hid-13-mov-prores4444"), ["HID-13"])
