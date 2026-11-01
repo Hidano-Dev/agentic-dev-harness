@@ -40,5 +40,11 @@
     "file": ".claude/skills/linear-worker/SKILL.md",
     "pattern": "(?s)policy-gate.{0,60}(迂回|回避)",
     "message": "policy-gate を迂回しない旨が書かれていること"
+  },
+  {
+    "id": "claude-md-imports-git-workflow",
+    "file": "CLAUDE.md",
+    "pattern": "(?m)^@\\.claude/rules/git-workflow\\.md\\s*$",
+    "message": "ルートの CLAUDE.md が @.claude/rules/git-workflow.md を import していること(消すと Git 運用ルールが読み込まれなくなる)"
   }
 ]
