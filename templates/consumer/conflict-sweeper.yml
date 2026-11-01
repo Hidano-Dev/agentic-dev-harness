@@ -12,6 +12,8 @@
 # - 1 ファイルでも解消できなければマージを取り消し、ラベル needs-conflict-resolution を付けて
 #   衝突ファイルをコメントする(同じ head SHA には同じコメントを重複投稿しない)。
 #   人間・エージェントが解消して MERGEABLE に戻った PR からはラベルを外す
+# - config の conflicts.auto_resolve が false なら、マージも push もせず、コンフリクトしている PR に
+#   ラベルとコメントを付けるだけにする。ラベル名は conflicts.label(既定 needs-conflict-resolution)
 # - 対象外: draft、fork からの PR
 # - push は GitHub App のトークンで行う(GITHUB_TOKEN の push では CI・codex-review が走らないため)。
 #   secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無ければ warning を出して何もしない。
@@ -39,7 +41,6 @@ permissions:
   contents: read
 
 env:
-  LABEL: needs-conflict-resolution
   MARKER_PREFIX: harness-conflict-sweeper
 
 jobs:
@@ -86,9 +87,26 @@ jobs:
         run: |
           cfg=.kiro/orchestration/config.json
           base=""
+          auto_resolve=true
+          label=needs-conflict-resolution
           if [ -f "$cfg" ]; then
-            base=$(python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1], encoding="utf-8")); print(((c.get("github") or {}).get("default_branch")) or "")' "$cfg")
+            # 1 行目: 既定ブランチ / 2 行目: conflicts.auto_resolve(true/false)/ 3 行目: conflicts.label
+            settings=$(python3 -I -c '
+          import json, sys
+          c = json.load(open(sys.argv[1], encoding="utf-8"))
+          g = c.get("github") or {}
+          k = c.get("conflicts") or {}
+          one = lambda v: " ".join(str(v).split())  # GITHUB_OUTPUT に改行を混ぜない
+          print(one(g.get("default_branch") or ""))
+          print("false" if k.get("auto_resolve") is False else "true")
+          print(one(k.get("label") or "needs-conflict-resolution"))
+          ' "$cfg")
+            base=$(sed -n 1p <<<"$settings")
+            auto_resolve=$(sed -n 2p <<<"$settings")
+            label=$(sed -n 3p <<<"$settings")
           fi
+          echo "auto_resolve=$auto_resolve" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
           if [ -z "$base" ]; then
             base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
           fi
@@ -107,19 +125,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           REPO: ${{ github.repository }}
           BASE: ${{ steps.base.outputs.branch }}
+          LABEL: ${{ steps.base.outputs.label }}
+          AUTO_RESOLVE: ${{ steps.base.outputs.auto_resolve }}
           APP_SLUG: ${{ steps.token.outputs.app-slug }}
         run: |
           set -uo pipefail
           tools="$RUNNER_TEMP/harness-tools"
           mkdir -p "$tools"
           resolver=.claude/skills/linear-worker/scripts/resolve_conflicts.py
-          if [ ! -f "$resolver" ]; then
-            echo "::notice::$resolver が無いためスキップしました(Harness Sync で配布物を最新化してください)"
-            exit 0
+          if [ "$AUTO_RESOLVE" = true ] && [ ! -f "$resolver" ]; then
+            echo "::notice::$resolver が無いため、自動解消せずラベルとコメントだけ行います(Harness Sync で配布物を最新化してください)"
+            AUTO_RESOLVE=false
           fi
           # PR ブランチを checkout すると作業ツリーが入れ替わるので、既定ブランチ側の
           # スクリプトと config を退避しておく
-          cp "$resolver" "$tools/resolve_conflicts.py"
+          if [ "$AUTO_RESOLVE" = true ]; then cp "$resolver" "$tools/resolve_conflicts.py"; fi
           cfg_copy="$tools/config.json"
           if [ -f .kiro/orchestration/config.json ]; then cp .kiro/orchestration/config.json "$cfg_copy"; fi
 
@@ -161,6 +181,20 @@ jobs:
             fi
             if [ "$m" != CONFLICTING ]; then
               echo "#$n: mergeable=$m のため対象外"
+              return 0
+            fi
+
+            # conflicts.auto_resolve が false: マージも push もせず、ラベルとコメントだけ行う
+            if [ "$AUTO_RESOLVE" != true ]; then
+              if [ "$has_label" != true ]; then gh pr edit "$n" --add-label "$LABEL" >/dev/null || true; fi
+              marker="<!-- $MARKER_PREFIX kind=unresolved head=$head_sha -->"
+              if already_commented "$n" "$marker"; then
+                echo "#$n: 同じ head へのコメントは投稿済み"
+              else
+                body="$marker"$'\n'"\`$BASE\` との間にマージコンフリクトがあります(自動解消は無効: conflicts.auto_resolve)。手動で解消してください。"
+                gh pr comment "$n" --body "$body" >/dev/null
+              fi
+              echo "#$n: コンフリクトがあるためラベルを付けました(自動解消は無効)"
               return 0
             fi
 
