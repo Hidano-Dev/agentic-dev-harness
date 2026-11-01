@@ -12,6 +12,7 @@
     running     レビュー中(チェックが in_progress / ボットの eyes リアクション)
     clean       現在のヘッドのレビューが完了し、未解決の P0 / P1 スレッドが無い
     findings    レビューが完了し(または引き継ぎ / 上限)、未解決の P0 / P1 スレッドが残っている
+                (action: スレッドにできず本文にだけ載った P0 / P1 = outside_diff_p1 が現在のヘッドにある場合も)
     skipped     レビュー不要・引き継ぎ・回数上限・draft(未解決の P0 / P1 スレッドは無い)
     unavailable レビューを実行できなかった(チェック失敗・fail-open・review.bot が null)
     timeout     現在のヘッドの push(app は依頼との遅い方)から review.wait_minutes を超えても完了しない
@@ -164,13 +165,18 @@ def status_action(repo: str, pr: int, settings: dict) -> dict:
     mine = [m for m in fetch_markers(repo, pr) if m["sha"] == head]
     marker = mine[-1] if mine else None
     if marker:
+        # スレッドにできなかった(本文にだけ載った)P0 / P1。thread が無い古い記録は inline で代用する
         out.update(review_url=marker.get("url"), mode=marker["mode"], round=marker["round"],
                    outside_diff_p1=sum(1 for f in marker["findings"]
-                                       if f.get("severity") in common.BLOCKING and f.get("inline") is False))
+                                       if f.get("severity") in common.BLOCKING
+                                       and f.get("thread", f.get("inline")) is False))
     if marker and marker["mode"] == "unavailable":
         return dict(out, state="unavailable", reason="Codex を実行できなかった(fail-open でチェックは成功)")
     if p1:
         return dict(out, state="findings", reason=f"未解決の P0 / P1 スレッドが {p1} 件")
+    if out.get("outside_diff_p1"):
+        return dict(out, state="findings",
+                    reason=f"スレッドにできなかった P0 / P1 が {out['outside_diff_p1']} 件(レビュー本文を参照。修正を push する)")
     if marker is None:
         return dict(out, state="skipped", reason="このヘッドのマーカーなし(fast track / OPENAI_API_KEY なし / 同じヘッドはレビュー済み)")
     if marker["mode"] in ("full", "delta"):

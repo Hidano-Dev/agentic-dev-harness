@@ -93,11 +93,25 @@ class PostReviewTest(GitRepoTestCase):
             mock.patch.object(post_review, "fetch_markers", side_effect=lambda repo, pr: list(self.markers)),
             mock.patch.object(post_review, "create_review", side_effect=self._create_review),
             mock.patch.object(post_review, "create_comment", side_effect=self._create_comment),
+            mock.patch.object(post_review, "create_file_comment", side_effect=self._create_file_comment),
+            mock.patch.object(post_review, "fetch_review_comments", side_effect=lambda repo, pr: list(self.review_comments)),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         self.fail_inline = False
+        self.fail_file = False
+        self.review_comments: list[dict] = []
+
+    def _create_file_comment(self, repo, pr, head, path, body):
+        if self.fail_file:
+            raise common.GitHubError("422 Unprocessable Entity")
+        self.assertEqual(head, self.head)
+        self.posted.append(("file", {"path": path, "body": body}))
+        return {"html_url": "https://example/file/1"}
+
+    def kinds(self, kind):
+        return [p for k, p in self.posted if k == kind]
 
     def _create_review(self, repo, pr, payload):
         if self.fail_inline and payload["comments"]:
@@ -131,9 +145,13 @@ class PostReviewTest(GitRepoTestCase):
         ]
         out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result(findings))
         self.assertTrue(out["posted"])
-        self.assertEqual((out["inline"], out["outside_diff"], out["minor"]), (1, 1, 2))
-        kind, payload = self.posted[0]
-        self.assertEqual(kind, "review")
+        self.assertEqual((out["inline"], out["file_level"], out["body_only"], out["minor"]), (1, 1, 0, 2))
+        files = self.kinds("file")
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["path"], "src/renamed.py")
+        self.assertTrue(files[0]["body"].startswith("場所: `src/renamed.py:1`"))
+        self.assertRegex(files[0]["body"], common.FINDING_RE)
+        payload = self.kinds("review")[0]
         self.assertEqual(payload["event"], "COMMENT")
         self.assertEqual(payload["commit_id"], self.head)
         self.assertEqual(len(payload["comments"]), 1)
@@ -149,10 +167,41 @@ class PostReviewTest(GitRepoTestCase):
         m = common.parse_marker(body)
         self.assertEqual((m["sha"], m["round"], m["mode"], m["patch"]), (self.head, 1, "full", "abc"))
         self.assertEqual(len(m["findings"]), 4)
-        inline_flags = {f["title"]: f["inline"] for f in m["findings"]}
-        self.assertEqual(inline_flags["壊れている"], True)
-        self.assertEqual(inline_flags["差分外"], False)
+        flags = {f["title"]: (f["inline"], f["thread"]) for f in m["findings"]}
+        self.assertEqual(flags["壊れている"], (True, True))
+        self.assertEqual(flags["差分外"], (False, True))
+        self.assertEqual(flags["軽微"], (False, False))
         self.assertEqual(body.count("<!-- harness-codex-review "), 1)
+
+    def test_file_not_in_diff_goes_to_first_changed_file(self):
+        out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result(
+            [{"severity": "P1", "path": "lib/untouched.py", "line": 42, "title": "呼び出し側が壊れる", "body": "b"}]))
+        self.assertEqual(out["file_level"], 1)
+        f = self.kinds("file")[0]
+        first = next(iter(post_review.commentable_lines(self.base, self.head)))
+        self.assertEqual(f["path"], first)
+        self.assertTrue(f["body"].startswith("実際の場所: `lib/untouched.py:42`"))
+        m = common.parse_marker(self.kinds("review")[0]["body"])
+        self.assertTrue(m["findings"][0]["thread"])
+
+    def test_file_comment_rejected_goes_to_body(self):
+        self.fail_file = True
+        with redirect_stderr(io.StringIO()):
+            out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result(
+                [{"severity": "P0", "path": "src/renamed.py", "line": 1, "title": "差分外", "body": "b"}]))
+        self.assertEqual((out["file_level"], out["body_only"]), (0, 1))
+        body = self.kinds("review")[0]["body"]
+        self.assertIn("スレッドにできなかった P0 / P1", body)
+        m = common.parse_marker(body)
+        self.assertEqual((m["findings"][0]["inline"], m["findings"][0]["thread"]), (False, False))
+
+    def test_file_comment_not_duplicated_on_rerun(self):
+        f = {"severity": "P0", "path": "src/renamed.py", "line": 1, "title": "差分外", "body": "b"}
+        self.review_comments = [{"user": {"login": "github-actions[bot]"}, "commit_id": self.head,
+                                 "path": "src/renamed.py", "body": post_review.file_comment_body(f, "src/renamed.py")}]
+        out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([f]))
+        self.assertEqual(out["file_level"], 1)
+        self.assertEqual(self.kinds("file"), [])
 
     def test_no_findings_still_posts(self):
         out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([]))
@@ -168,18 +217,27 @@ class PostReviewTest(GitRepoTestCase):
         self.assertEqual(payload["comments"], [])
         self.assertIn("P0 / P1 の指摘なし", payload["body"])
 
-    def test_inline_rejected_falls_back_to_body(self):
+    def test_inline_rejected_falls_back_to_file_level(self):
         self.fail_inline = True
         err = io.StringIO()
+        finding = {"severity": "P1", "path": "src/renamed.py", "line": 10, "title": "壊れている", "body": "b"}
         with redirect_stderr(err):
-            out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result(
-                [{"severity": "P1", "path": "src/renamed.py", "line": 10, "title": "壊れている", "body": "b"}]))
+            out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([finding]))
         self.assertIn("::warning::", err.getvalue())
-        self.assertEqual(out["inline"], 0)
-        self.assertEqual(out["outside_diff"], 1)
-        payload = self.posted[0][1]
+        self.assertEqual((out["inline"], out["file_level"], out["body_only"]), (0, 1, 0))
+        self.assertEqual(self.kinds("file")[0]["path"], "src/renamed.py")
+        payload = self.kinds("review")[0]
         self.assertEqual(payload["comments"], [])
         self.assertIn("壊れている", payload["body"])
+
+    def test_inline_and_file_rejected_falls_back_to_body(self):
+        self.fail_inline = self.fail_file = True
+        with redirect_stderr(io.StringIO()):
+            out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result(
+                [{"severity": "P1", "path": "src/renamed.py", "line": 10, "title": "壊れている", "body": "b"}]))
+        self.assertEqual((out["inline"], out["file_level"], out["body_only"]), (0, 0, 1))
+        m = common.parse_marker(self.kinds("review")[0]["body"])
+        self.assertFalse(m["findings"][0]["thread"])
 
     def test_duplicate_is_not_posted(self):
         self.markers = [{"sha": self.head, "mode": "full", "round": 1, "url": "u", "findings": []}]
