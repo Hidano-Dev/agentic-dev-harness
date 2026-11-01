@@ -14,7 +14,8 @@ PR 提出後に止まる原因(Codex App のレビューが五月雨式に届く
   プロンプトとスキーマは配布物)。2 回目以降は差分のみ・`max_rounds` で打ち止め・base の取り込みだけの push は
   再レビューしない。レビュー用のスクリプトと config は PR の base から取る。要 `OPENAI_API_KEY`。
   **取り込み側で必要な作業: Codex GitHub App の自動レビューを無効にする**
-- **ゲート**: `templates/consumer/policy-gate.yml`(新規、`pull_request_target`)+ `policy-gate-recheck.yml`。
+- **ゲート**: `templates/consumer/policy-gate.yml`(新規、`pull_request_target`)+ `policy-gate-recheck.yml` /
+  `policy-gate-relabel.yml`(Approve 後の再評価。secret は `workflow_run` 側だけが使う)。
   不変条件(`.harness/invariants.json`)・コアの変更への人間の承認・配布物の直接編集の禁止・同期 PR の完全一致検証
 - **保護の段階化**: config 移行 `2026-11-01-protected-core-tiering` が `auto_merge.protected_paths` から
   `.claude/` `CLAUDE.md` `AGENTS.md` `.agents/` を外し、`.harness/` `.claude/settings.json` 等のコアを足す

@@ -104,8 +104,10 @@ PR の `config.json` を確認してマージする。規約から変えたい�
   `promote` 等のワークフローを含む)の**同期 PR を自動で作る**。初回は `policy-gate` がまだ base に無いので
   人間がマージする(以後の同期 PR は配布元 main との完全一致が検証できれば自動でマージされる)
 - CI(fast checks 相当)が PR で走ること。`configure_settings` を on にした場合、`configure_repo.py` は
-  develop の必須チェックを `codex-review` / `policy-gate` / `aggregate-docs` と、`pull_request` で走る既存 CI から
-  推定して設定する。導入より後に CI を足したら、Rollout(下記)を `configure_settings` 付きで再実行する
+  develop の必須チェックを、`pull_request` で走る既存 CI から推定して設定する。`codex-review` / `policy-gate` /
+  `aggregate-docs` は、そのワークフローが develop に入った後(初回の同期 PR のマージ後)に `harness-sync` が
+  `configure_repo.py --protection-only` で必須チェックへ足す(`pull_request_target` のワークフローは base に
+  入るまで動かないため、先に必須にすると PR が永遠に待ち状態になる)。導入より後に CI を足したら、Rollout(下記)を `configure_settings` 付きで再実行する
 - 1 本目の PR で `codex-review` が「指摘なし」または指摘付きの review を 1 件投稿することを確認する
 - **Linear の GitHub 連携**(2 段構成のとき): Linear の Settings → Integrations → GitHub の
   ブランチごとのワークフロー設定で、`develop` へのマージを Done(または独自の状態)に、`main` へのマージを
@@ -172,7 +174,7 @@ develop の作成・既定ブランチの変更・branch protection も行い、
 - **Release PR**(develop → main)は `promote` が常に 1 本開いておく。本文の先頭にコア・配布物・指示文の
   変更が並ぶので、そこを中心に見て人間がマージする(merge commit。squash しない)
 - 既知の制約: `codex-review` と `policy-gate` は `pull_request_target` で base の定義を使い、App の秘密鍵を使う
-  再評価は `workflow_run`(既定ブランチの定義)で行うので、PR がそれらを書き換えて secret を読んだりゲートを
+  再評価は `policy-gate-relabel.yml`(`workflow_run`。既定ブランチの定義)で行うので、PR がそれらを書き換えて secret を読んだりゲートを
   外したりはできない。ただし PR が**新しく足した**ワークフローは PR の定義で動くため、エージェントが**意図的に**
   同名のチェック(`policy-gate` 等)を出して必須チェックを偽装することまでは仕組みで防げない。`.github/` の変更は `policy-gate` が人間の Approve を求め、Release PR の
   先頭にも強調されるので、そこで確認する。より強くしたい場合は CODEOWNERS で `.github/` にコードオーナーの
