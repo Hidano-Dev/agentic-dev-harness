@@ -148,6 +148,70 @@ class ReviewPlanTest(GitRepoTestCase):
         self.assertEqual(plan["base"], c1)
 
 
+class SyncPrTest(GitRepoTestCase):
+    """Harness Sync の同期 PR は形だけ見て skip する(内容の検証は policy-gate)。"""
+
+    def setUp(self):
+        super().setUp()
+        self.commit({
+            "app.py": CODE_V1,
+            ".harness/version": json.dumps({"repo": "o/harness", "sha": "1" * 40,
+                                            "owned": [".claude/skills/linear-worker", ".claude/rules/git-workflow.md"]}),
+            ".claude/skills/linear-worker/scripts/x.py": "a = 1\n",
+        })
+        self.git("checkout", "-q", "-b", "chore/harness-sync-2222222")
+
+    def sync_files(self, **extra):
+        files = {
+            ".harness/version": json.dumps({"repo": "o/harness", "sha": "2" * 40}),
+            ".claude/skills/linear-worker/scripts/x.py": "a = 2\n",
+            ".github/workflows/codex-review.yml": "name: x\n",
+            "CLAUDE.md": "@.claude/rules/git-workflow.md\n",
+            ".kiro/orchestration/config.json": "{}\n",
+        }
+        files.update(extra)
+        return files
+
+    def test_sync_pr_is_skipped_and_announced(self):
+        self.commit(self.sync_files())
+        plan = review_plan.decide(base="main", head="HEAD", markers=[], settings=SETTINGS,
+                                  config=".kiro/orchestration/config.json")
+        self.assertEqual(plan["mode"], "skip")
+        self.assertEqual(plan["reason"], "配布元からの同期 PR(内容の検証は policy-gate が行う)")
+        self.assertTrue(plan["announce"])
+
+    def test_outside_sync_scope_is_reviewed(self):
+        self.commit(self.sync_files(**{"app.py": CODE_V2}))
+        plan = review_plan.decide(base="main", head="HEAD", markers=[], settings=SETTINGS,
+                                  config=".kiro/orchestration/config.json")
+        self.assertEqual(plan["mode"], "full")
+
+    def test_head_version_cannot_widen_owned(self):
+        files = self.sync_files(**{"app.py": CODE_V2})
+        files[".harness/version"] = json.dumps({"repo": "o/harness", "sha": "2" * 40, "owned": ["app.py"]})
+        self.commit(files)
+        self.assertFalse(review_plan.is_harness_sync_pr("main", "HEAD"))
+
+    def test_version_unchanged_is_not_sync(self):
+        self.commit({".claude/skills/linear-worker/scripts/x.py": "a = 3\n"})
+        self.assertFalse(review_plan.is_harness_sync_pr("main", "HEAD"))
+
+    def test_distributor_is_not_sync(self):
+        self.git("checkout", "-q", "main")
+        self.commit({"sync-manifest.json": "{}\n"})
+        self.git("checkout", "-q", "-b", "other")
+        self.commit(self.sync_files())
+        self.assertFalse(review_plan.is_harness_sync_pr("main", "HEAD"))
+
+    def test_first_sync_uses_default_owned(self):
+        self.git("checkout", "-q", "main")
+        self.git("rm", "-q", ".harness/version")
+        self.git("commit", "-q", "-m", "no version")
+        self.git("checkout", "-q", "-b", "first")
+        self.commit(self.sync_files())
+        self.assertTrue(review_plan.is_harness_sync_pr("main", "HEAD"))
+
+
 class PromptTest(GitRepoTestCase):
     def setUp(self):
         super().setUp()
@@ -324,6 +388,9 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(t.count('codex-args: \'["-c", "project_doc_max_bytes=0"]\''), 2)
         self.assertIn("persist-credentials: false", t)
         self.assertIn("fork PRs are not auto-reviewed", t)
+        # API キー未設定時の理由はスクリプト側の定義と同じ文言
+        self.assertIn(f'reason="{common.NO_API_KEY_REASON}"', t)
+        self.assertNotIn("::notice::secret OPENAI_API_KEY", t)
         # Codex の手順に GH_TOKEN を渡さない / run: に ${{ }} を直接展開しない
         for block in t.split("\n      - ")[1:]:
             if "openai/codex-action" in block:
