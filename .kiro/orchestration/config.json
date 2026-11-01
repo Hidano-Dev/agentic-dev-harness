@@ -1,0 +1,46 @@
+{
+  "$comment": "agentic-dev-harness 自身の設定。Linear 連携なし(linear.team が無いので linear-worker は起動しない)。promote / policy-gate / codex-review / conflict-sweeper が読む。develop = エージェントの作業ブランチ、main = 人間がレビューした配布版(取り込み側は main から同期する)。",
+  "github": {
+    "repo": "Hidano-Dev/agentic-dev-harness",
+    "default_branch": "develop",
+    "release_branch": "main"
+  },
+  "checks": {
+    "fast": ["python3 -m unittest discover -s tests"],
+    "unity_ci": null
+  },
+  "review": {
+    "provider": "action",
+    "action": {
+      "workflow": "codex-review.yml",
+      "check_name": "codex-review",
+      "max_rounds": 3,
+      "model": "",
+      "effort": ""
+    },
+    "fail_open": true,
+    "bot": null,
+    "wait_minutes": 60
+  },
+  "conflicts": {
+    "auto_resolve": true,
+    "auto_resolve_extensions": [".md", ".markdown", ".rst", ".adoc", ".asciidoc", ".txt"],
+    "label": "needs-conflict-resolution"
+  },
+  "fast_track": {
+    "enabled": true
+  },
+  "auto_merge": {
+    "enabled": true,
+    "method": "merge",
+    "protected_paths": [".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/"]
+  },
+  "applied_migrations": [
+    "2026-10-01-auto-merge-enabled",
+    "2026-10-01-protect-orchestration-config",
+    "2026-10-02-protect-root-instructions",
+    "2026-11-01-review-provider-action",
+    "2026-11-01-protected-core-tiering",
+    "2026-11-01-branch-model-keys"
+  ]
+}

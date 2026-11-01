@@ -28,5 +28,17 @@
     "file": ".claude/skills/linear-worker/SKILL.md",
     "pattern": "(?s)config(\\.json)?[^\\n]{0,80}(ワーカー自身|ワーカーが自分|自分自身|自ら)[^\\n]{0,40}(書き換|変更|編集)",
     "message": "config(.kiro/orchestration/config.json)をワーカー自身が書き換えない旨が書かれていること"
+  },
+  {
+    "id": "release-pr-merged-by-human",
+    "file": ".claude/rules/git-workflow.md",
+    "pattern": "(?s)Release PR.{0,80}人間.{0,40}マージ",
+    "message": "Release PR(作業ブランチ → リリースブランチ)は人間がマージする旨が書かれていること"
+  },
+  {
+    "id": "no-policy-gate-bypass",
+    "file": ".claude/skills/linear-worker/SKILL.md",
+    "pattern": "(?s)policy-gate.{0,60}(迂回|回避)",
+    "message": "policy-gate を迂回しない旨が書かれていること"
   }
 ]

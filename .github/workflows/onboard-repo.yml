@@ -52,6 +52,11 @@ on:
         type: choice
         options: [codex, none]
         default: codex
+      configure_settings:
+        description: 'develop を作って既定ブランチにし、auto-merge と branch protection を設定する(2 段構成。secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が必要)'
+        required: false
+        type: boolean
+        default: true
       direct_push:
         description: 'この実行の導入コミットを PR にせずデフォルトブランチへ直接 push する(実行ごとの指定。保存されない)'
         required: false
@@ -120,6 +125,22 @@ jobs:
       - name: Checkout harness (this repository)
         uses: actions/checkout@v4
 
+      # 2 段構成(develop = 作業ブランチ / main = リリース)。対象を解決する前に行い、以降の導入 PR は develop へ出す
+      - name: Create GitHub App token
+        id: app
+        if: inputs.configure_settings
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Configure repository (develop, auto-merge, branch protection)
+        if: inputs.configure_settings
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -I scripts/sync/configure_repo.py --repo "$TARGET_REPO" --create-develop --apply
+
       - name: Resolve target repository
         id: target
         env:
@@ -168,6 +189,7 @@ jobs:
         env:
           REPO: ${{ steps.target.outputs.repo }}
           DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          RELEASE_BRANCH: ${{ inputs.configure_settings && 'main' || '' }}
         run: |
           # 書き込み先が submodule(gitlink, mode 160000)だと、コピーしても superproject の
           # git add には乗らず、配布物が欠けたまま成功に見えるので先に拒否する
@@ -182,6 +204,7 @@ jobs:
             --repo "$REPO" \
             --default-branch "$DEFAULT_BRANCH" \
             --linear-team "$LINEAR_TEAM" --review-bot "$REVIEW_BOT" \
+            --release-branch "$RELEASE_BRANCH" \
             --result /tmp/bootstrap.json
           echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
           echo "config=$(jq -r .config /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
@@ -286,7 +309,7 @@ jobs:
             echo
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
             case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
-              written)  echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
+              written)  echo "- \`.github/workflows/harness-sync.yml\` を配置(既定ブランチへの push・毎日の定期実行で配布元の更新を検知し、同期 PR を自動で作る)" ;;
               updated)  echo "- 既存の \`harness-sync.yml\`(旧版。SDD 一式も同期していた)を配布版に差し替え" ;;
               *)        echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用(配布版と同一)" ;;
             esac

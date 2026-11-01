@@ -1,0 +1,204 @@
+# =============================================================================
+# Codex レビュー(取り込み側リポジトリに置く)
+# -----------------------------------------------------------------------------
+# PR の現在のヘッドを Codex(openai/codex-action)でレビューし、結果を 1 件の PR review
+# (event=COMMENT)として投稿する。job 名 `codex-review` は develop の branch protection の
+# 必須チェック名なので変えない。チェックが示すのは「現在のヘッドのレビューが完了したこと」で、
+# 指摘の有無ではない(P0 / P1 は該当行の未解決スレッド + "Require conversation resolution" で止める)。
+#
+# - 同じ PR のレビューは concurrency で常に最新ヘッドの 1 本だけ(古いヘッドの実行は取り消す)
+# - draft はスキップ。fork からの PR は失敗させる(secret が渡らずレビューできないため。
+#   スキップだと必須チェックが成功扱いになる)。メンテナーがレビューして手動でマージする
+# - 何をするか(skip / capped / delta / full)は review_plan.py が決める。前回の情報は
+#   post_review.py が PR に埋めた隠しマーカー(github-actions[bot] のものだけ信頼)から読む
+#   - skip:   fast track、または前回レビュー済みのヘッドから PR 自身の差分が変わっていない
+#   - capped: レビュー回数が review.action.max_rounds(既定 3)に達した → レビューせず成功
+#   - delta:  前回からの追加分だけを見る(前回の P0 / P1 の解消確認 + 変更行の新規 P0 / P1)
+#   - full:   初回、または force-push / rebase で前回の SHA が祖先でない
+# - Codex の失敗(出力不正を含む)は 1 回だけ再試行。それでも失敗したら review.fail_open
+#   (既定 true)なら「レビュー不可(fail-open)」をコメントして成功、false なら失敗
+# - secret OPENAI_API_KEY が無ければ notice を出して成功(レビューなし扱い)
+# - 判定・投稿の本体は配布物の .claude/skills/linear-worker/scripts/ にある。このファイル自体は薄く保つ
+# - レビューする側(スクリプト・プロンプト雛形・スキーマ・config)は PR の base コミットから取り出して使う
+#   (PR が自分をレビューするコードを書き換えられないように)。base にまだ無い初回導入時だけ PR ヘッドのものを使う
+#
+# 必要なもの: secret OPENAI_API_KEY(リポジトリまたは組織)
+# 配置先: .github/workflows/codex-review.yml
+# =============================================================================
+name: Codex Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  codex-review:
+    # draft はスキップ(draft はマージできない。ready_for_review で走る)。fork は下の手順で失敗させる
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      THIS_REPO: ${{ github.repository }}
+    steps:
+      # fork には secret が渡らずレビューできない。スキップ(= 必須チェックが成功扱い)にせず失敗させる
+      - name: Reject fork PRs
+        run: |
+          if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+            echo "::error::fork からの PR は自動レビューしません。メンテナーがレビューして手動でマージしてください(fork PRs are not auto-reviewed; a maintainer must review and merge manually)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # Codex に作業ツリーを渡すので、トークンを .git/config に残さない
+          persist-credentials: false
+
+      # レビューする側のコード(スクリプト・プロンプト・スキーマ・config)は PR の base から取る。
+      # PR が自分をレビューするコードや設定を書き換えられないようにするため。レビュー対象は
+      # 引き続き作業ツリー(PR のヘッド)
+      - name: Prepare reviewer from the base commit
+        id: harness
+        run: |
+          rel=.claude/skills/linear-worker
+          dir="$RUNNER_TEMP/harness-base"
+          mkdir -p "$dir"
+          if git cat-file -e "$BASE_SHA:$rel/scripts/review_plan.py" 2>/dev/null; then
+            git archive "$BASE_SHA" "$rel" | tar -x -C "$dir"
+          elif [ -f "$rel/scripts/review_plan.py" ]; then
+            echo "::notice::base($BASE_SHA)に $rel/scripts/review_plan.py が無いため、PR ヘッドのスクリプトを使います(初回導入)"
+            mkdir -p "$dir/$rel"
+            cp -R "$rel/." "$dir/$rel/"
+          else
+            echo "::notice::$rel/scripts/review_plan.py が無いためレビューをスキップしました(Harness Sync で配布物を最新化してください)"
+            exit 0
+          fi
+          # base に config が無ければ存在しないパスを渡す(= 既定値)
+          if git cat-file -e "$BASE_SHA:.kiro/orchestration/config.json" 2>/dev/null; then
+            git show "$BASE_SHA:.kiro/orchestration/config.json" > "$RUNNER_TEMP/harness-config.json"
+          fi
+          echo "dir=$dir/$rel" >> "$GITHUB_OUTPUT"
+          {
+            echo "SCRIPTS=$dir/$rel/scripts"
+            echo "HARNESS_CONFIG=$RUNNER_TEMP/harness-config.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Plan
+        id: plan
+        if: ${{ steps.harness.outputs.dir != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 "$SCRIPTS/review_plan.py" --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --config "$HARNESS_CONFIG" \
+            --output "$RUNNER_TEMP/codex-plan.json" --prompt-out "$RUNNER_TEMP/codex-prompt.md" --github-output
+
+      - name: Announce skip / cap
+        if: ${{ steps.plan.outputs.announce == 'true' && (steps.plan.outputs.mode == 'skip' || steps.plan.outputs.mode == 'capped') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.plan.outputs.mode }}
+        run: python3 "$SCRIPTS/post_review.py" --kind "$MODE" --plan "$RUNNER_TEMP/codex-plan.json" --pr "$PR_NUMBER"
+
+      - name: Check OpenAI API key
+        id: key
+        if: ${{ steps.plan.outputs.mode == 'full' || steps.plan.outputs.mode == 'delta' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::secret OPENAI_API_KEY が無いため Codex レビューを省略しました(レビューなし扱い)"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---- 1 回目
+      - name: Codex review
+        id: codex1
+        if: ${{ steps.key.outputs.present == 'true' }}
+        continue-on-error: true
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: ${{ runner.temp }}/codex-prompt.md
+          output-file: ${{ runner.temp }}/codex-result-1.json
+          output-schema-file: ${{ steps.harness.outputs.dir }}/templates/codex-review-schema.json
+          permission-profile: ":workspace"
+          model: ${{ steps.plan.outputs.model }}
+          effort: ${{ steps.plan.outputs.effort }}
+
+      - name: Validate result
+        id: check1
+        if: ${{ steps.key.outputs.present == 'true' }}
+        env:
+          OUTCOME: ${{ steps.codex1.outcome }}
+        run: |
+          f="$RUNNER_TEMP/codex-result-1.json"
+          if [ "$OUTCOME" = success ] && python3 "$SCRIPTS/post_review.py" --check-result "$f"; then
+            echo "file=$f" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Codex レビューの 1 回目が失敗しました(outcome: $OUTCOME)。1 回だけ再試行します"
+          fi
+
+      # ---- 再試行(1 回だけ)
+      - name: Codex review (retry)
+        id: codex2
+        if: ${{ steps.key.outputs.present == 'true' && steps.check1.outputs.file == '' }}
+        continue-on-error: true
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: ${{ runner.temp }}/codex-prompt.md
+          output-file: ${{ runner.temp }}/codex-result-2.json
+          output-schema-file: ${{ steps.harness.outputs.dir }}/templates/codex-review-schema.json
+          permission-profile: ":workspace"
+          model: ${{ steps.plan.outputs.model }}
+          effort: ${{ steps.plan.outputs.effort }}
+
+      - name: Validate result (retry)
+        id: check2
+        if: ${{ steps.key.outputs.present == 'true' && steps.check1.outputs.file == '' }}
+        env:
+          OUTCOME: ${{ steps.codex2.outcome }}
+        run: |
+          f="$RUNNER_TEMP/codex-result-2.json"
+          if [ "$OUTCOME" = success ] && python3 "$SCRIPTS/post_review.py" --check-result "$f"; then
+            echo "file=$f" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---- 投稿
+      - name: Post review
+        if: ${{ steps.check1.outputs.file != '' || steps.check2.outputs.file != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_FILE: ${{ steps.check1.outputs.file || steps.check2.outputs.file }}
+        run: python3 "$SCRIPTS/post_review.py" --kind review --plan "$RUNNER_TEMP/codex-plan.json" --result "$RESULT_FILE" --pr "$PR_NUMBER"
+
+      - name: Codex unavailable
+        if: ${{ steps.key.outputs.present == 'true' && steps.check1.outputs.file == '' && steps.check2.outputs.file == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAIL_OPEN: ${{ steps.plan.outputs.fail_open }}
+        run: |
+          if [ "$FAIL_OPEN" = true ]; then
+            echo "::warning::Codex レビューが 2 回とも失敗したため fail-open で成功させます(review.fail_open)"
+            python3 "$SCRIPTS/post_review.py" --kind unavailable --plan "$RUNNER_TEMP/codex-plan.json" --pr "$PR_NUMBER" \
+              --reason "Codex の実行または出力の検査が 2 回とも失敗"
+          else
+            echo "::error::Codex レビューが 2 回とも失敗しました(review.fail_open = false)"
+            exit 1
+          fi

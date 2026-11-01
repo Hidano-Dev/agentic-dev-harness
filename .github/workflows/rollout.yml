@@ -129,10 +129,17 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ matrix.repo }}
           DEFAULT_BRANCH: ${{ steps.repo.outputs.default_branch }}
+          CONFIGURE: ${{ inputs.configure_settings }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           sha=$(git -C harness rev-parse HEAD)
           python3 -I harness/scripts/sync/apply_sync.py --harness harness --target target --sha "$sha" \
             --harness-repo "$GITHUB_REPOSITORY" --ref "$HARNESS_REF"
+          # develop を作った場合は config のブランチ設定も合わせる(config はコアなので、この同期 PR は
+          # policy-gate が人間の承認を求める。初回導入時に 1 度だけ)
+          if [ "$CONFIGURE" = "true" ] && [ "$DEFAULT_BRANCH" = "develop" ]; then
+            python3 -I harness/scripts/sync/set_branch_model.py --target target \
+              --default-branch develop --release-branch main
+          fi
           python3 -I harness/scripts/sync/publish_sync_pr.py --target target --repo "$REPO" \
             --base "$DEFAULT_BRANCH" --sha "$sha" --harness-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"

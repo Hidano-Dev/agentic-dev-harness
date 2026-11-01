@@ -13,16 +13,19 @@
 #
 # - PR が判定ロジック自体を書き換えて通すのを防ぐため、policy_gate.py は base 側のものを使う
 #   (base にまだ無い導入 PR のときだけ head 側)
-# - レビューの提出・取り消し(pull_request_review)でも再評価する(承認が付いたら緑になる)
+# - レビューの提出・取り消しでも再評価する(policy-gate-recheck.yml 経由。承認が付いたら緑になる)
 # - 配置先: .github/workflows/policy-gate.yml(Harness Sync が更新する)
 # =============================================================================
 name: Policy Gate
 
+# pull_request_target: ワークフローの定義を base ブランチから取る(PR がこのファイルを書き換えて
+# ゲートを無効化できないようにする)。PR のコードは checkout するが**実行しない**(policy_gate.py は
+# base から取り出して -I で実行し、PR の内容は git のデータとして読むだけ)。
+# レビューの提出・取り消しでの再評価は policy-gate-recheck.yml がラベル policy-gate-recheck を
+# 付け直して labeled イベントで起こす(pull_request_target にはレビューのイベントが無いため)
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 permissions:
   contents: read
@@ -54,12 +57,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           s=.claude/skills/linear-worker/scripts/policy_gate.py
           gate="$RUNNER_TEMP/policy_gate.py"
           if git cat-file -e "$BASE_SHA:$s" 2>/dev/null; then
             git show "$BASE_SHA:$s" > "$gate"
           elif [ -f "$s" ]; then
+            # 導入 PR だけは head 側を使う。pull_request_target では PR のコードを実行することになるので、
+            # 同一リポジトリの PR に限る(fork の PR では失敗させる)
+            if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+              echo "::error::base に $s が無く、fork の PR のため head 側のスクリプトも実行できません"
+              exit 1
+            fi
             echo "::notice::base に $s が無いため head 側を使います(導入 PR)"
             cp "$s" "$gate"
           else
