@@ -1,0 +1,242 @@
+# =============================================================================
+# コンフリクト掃除ワークフロー(取り込み側リポジトリに置く)
+# -----------------------------------------------------------------------------
+# 既定ブランチを base とする open PR のうち、マージコンフリクトで止まっているものについて、
+# 既定ブランチを PR ブランチへマージし、文書の「両側が同じ位置に追記しただけ」の衝突を
+# 機械的に解消して push する。並列に動く PR が同じ文書へ追記して自動マージが止まるのを防ぐ。
+#
+# - 解消の本体は配布物の .claude/skills/linear-worker/scripts/resolve_conflicts.py
+#   (対象の拡張子は config の conflicts.auto_resolve_extensions。コードファイルは触らない)。
+#   スクリプトと config は既定ブランチのものを使う(PR ブランチ側のコードは実行しない)
+# - 全ファイルを解消できた PR だけ merge commit を push し、解消したファイルを PR にコメントする
+# - 1 ファイルでも解消できなければマージを取り消し、ラベル needs-conflict-resolution を付けて
+#   衝突ファイルをコメントする(同じ head SHA には同じコメントを重複投稿しない)。
+#   人間・エージェントが解消して MERGEABLE に戻った PR からはラベルを外す
+# - 対象外: draft、fork からの PR
+# - push は GitHub App のトークンで行う(GITHUB_TOKEN の push では CI・codex-review が走らないため)。
+#   secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無ければ warning を出して何もしない。
+#   App に必要な権限: Contents / Pull requests / Issues の Read and write、
+#   Workflows の Read and write(既定ブランチ側のワークフロー変更を含む merge commit を push するため)
+# - push トリガーのブランチ名は固定で書いている。既定ブランチがこれ以外の名前なら追加する
+#   (既定ブランチ以外への push では何もしない)
+#
+# 配置先: .github/workflows/conflict-sweeper.yml
+# =============================================================================
+name: Conflict Sweeper
+
+on:
+  push:
+    branches: [develop, main, master]
+  schedule:
+    - cron: '17 * * * *'   # 1 時間ごと
+  workflow_dispatch:
+
+concurrency:
+  group: conflict-sweeper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  LABEL: needs-conflict-resolution
+  MARKER_PREFIX: harness-conflict-sweeper
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check GitHub App credentials
+        id: app
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため、コンフリクト掃除をスキップしました(GITHUB_TOKEN の push では CI が走らないため App トークンが必要です)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App token
+        id: token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        if: steps.app.outputs.enabled == 'true'
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      # 既定ブランチは config の github.default_branch、無ければリポジトリの既定ブランチ。
+      # 既定ブランチ以外への push では何もしない
+      - name: Resolve default branch
+        id: base
+        if: steps.app.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          cfg=.kiro/orchestration/config.json
+          base=""
+          if [ -f "$cfg" ]; then
+            base=$(python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1], encoding="utf-8")); print(((c.get("github") or {}).get("default_branch")) or "")' "$cfg")
+          fi
+          if [ -z "$base" ]; then
+            base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+          fi
+          if [ "$EVENT_NAME" = push ] && [ "$REF_NAME" != "$base" ]; then
+            echo "既定ブランチ($base)以外への push のためスキップ"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "branch=$base" >> "$GITHUB_OUTPUT"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Sweep conflicting PRs
+        if: steps.app.outputs.enabled == 'true' && steps.base.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ steps.base.outputs.branch }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+        run: |
+          set -uo pipefail
+          tools="$RUNNER_TEMP/harness-tools"
+          mkdir -p "$tools"
+          resolver=.claude/skills/linear-worker/scripts/resolve_conflicts.py
+          if [ ! -f "$resolver" ]; then
+            echo "::notice::$resolver が無いためスキップしました(Harness Sync で配布物を最新化してください)"
+            exit 0
+          fi
+          # PR ブランチを checkout すると作業ツリーが入れ替わるので、既定ブランチ側の
+          # スクリプトと config を退避しておく
+          cp "$resolver" "$tools/resolve_conflicts.py"
+          cfg_copy="$tools/config.json"
+          if [ -f .kiro/orchestration/config.json ]; then cp .kiro/orchestration/config.json "$cfg_copy"; fi
+
+          bot_login="${APP_SLUG}[bot]"
+          bot_id=$(gh api "/users/${bot_login}" --jq .id)
+          git config user.name "$bot_login"
+          git config user.email "${bot_id}+${bot_login}@users.noreply.github.com"
+
+          gh label create "$LABEL" --color d93f0b \
+            --description "自動で解消できないマージコンフリクトがある" >/dev/null 2>&1 || true
+
+          # 同じ PR・同じ head SHA・同じ種類のコメントが bot から既に出ていれば真
+          already_commented() {
+            local n="$1" marker="$2" bodies
+            # パイプで grep -q に渡すと早期終了で gh が SIGPIPE になり、pipefail で偽になるので変数に受ける
+            bodies=$(gh api "repos/$REPO/issues/$n/comments" --paginate \
+              --jq ".[] | select(.user.login == \"$bot_login\") | .body") || return 1
+            grep -qF -- "$marker" <<<"$bodies"
+          }
+
+          sweep_one() {
+            local pr="$1" n head_ref head_sha has_label m i out rc files marker body new_sha
+            n=$(jq -r .number <<<"$pr")
+            head_ref=$(jq -r .headRefName <<<"$pr")
+            head_sha=$(jq -r .headRefOid <<<"$pr")
+            has_label=$(jq -r --arg l "$LABEL" 'any(.labels[]; .name == $l)' <<<"$pr")
+
+            # mergeable は計算中だと UNKNOWN が返るので数回取り直す
+            m=UNKNOWN
+            for i in 1 2 3 4 5; do
+              m=$(gh pr view "$n" --json mergeable --jq .mergeable 2>/dev/null) || m=UNKNOWN
+              [ "$m" != UNKNOWN ] && break
+              sleep 6
+            done
+            if [ "$m" = MERGEABLE ] && [ "$has_label" = true ]; then
+              gh pr edit "$n" --remove-label "$LABEL" >/dev/null || true
+              echo "#$n: コンフリクトが解消済みのためラベルを外しました"
+              return 0
+            fi
+            if [ "$m" != CONFLICTING ]; then
+              echo "#$n: mergeable=$m のため対象外"
+              return 0
+            fi
+
+            echo "::group::#$n ($head_ref)"
+            git fetch -q --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+              "+refs/heads/$head_ref:refs/remotes/origin/$head_ref" || { echo "::warning::#$n: fetch に失敗"; echo "::endgroup::"; return 0; }
+            if [ "$(git rev-parse "refs/remotes/origin/$head_ref")" != "$head_sha" ]; then
+              echo "#$n: head が列挙後に更新されたため次回に回します"
+              echo "::endgroup::"
+              return 0
+            fi
+            git checkout -q --force --detach "$head_sha"
+            git clean -fdxq
+
+            if git merge --no-ff --no-commit "refs/remotes/origin/$BASE" >/dev/null 2>&1; then
+              # GitHub の mergeable が古かった(手元ではきれいにマージできる)。何もしない
+              git merge --abort 2>/dev/null || true
+              echo "#$n: 手元ではコンフリクトしないためスキップ"
+              echo "::endgroup::"
+              return 0
+            fi
+            if [ -z "$(git ls-files -u)" ]; then
+              git merge --abort 2>/dev/null || true
+              echo "::warning::#$n: コンフリクト以外の理由でマージに失敗しました"
+              echo "::endgroup::"
+              return 0
+            fi
+
+            out=$(python3 -I "$tools/resolve_conflicts.py" --config "$cfg_copy")
+            rc=$?
+            echo "$out"
+
+            if [ "$rc" -eq 0 ]; then
+              files=$(jq -r '.resolved | join(", ")' <<<"$out")
+              git commit -q -m "Merge $BASE into $head_ref (auto-resolved: $files)"
+              if ! git push -q origin "HEAD:refs/heads/$head_ref"; then
+                echo "::warning::#$n: push に失敗しました(head が更新された可能性。次回に再試行)"
+                echo "::endgroup::"
+                return 0
+              fi
+              new_sha=$(git rev-parse HEAD)
+              marker="<!-- $MARKER_PREFIX kind=resolved head=$new_sha -->"
+              body="$marker"$'\n'"\`$BASE\` を取り込み、次のファイルのコンフリクトを自動で解消しました(両側の追記をどちらも残しています。内容を確認してください)。"$'\n\n'
+              body+=$(jq -r '.resolved[] | "- `" + . + "`"' <<<"$out")
+              gh pr comment "$n" --body "$body" >/dev/null
+              if [ "$has_label" = true ]; then gh pr edit "$n" --remove-label "$LABEL" >/dev/null || true; fi
+              echo "#$n: 解消して push しました($new_sha)"
+            else
+              git merge --abort 2>/dev/null || git reset -q --hard
+              if [ "$rc" -ne 1 ]; then
+                echo "::warning::#$n: resolve_conflicts.py がエラーで終了しました(rc=$rc)"
+                echo "::endgroup::"
+                return 0
+              fi
+              if [ "$has_label" != true ]; then gh pr edit "$n" --add-label "$LABEL" >/dev/null || true; fi
+              marker="<!-- $MARKER_PREFIX kind=unresolved head=$head_sha -->"
+              if already_commented "$n" "$marker"; then
+                echo "#$n: 同じ head へのコメントは投稿済み"
+              else
+                body="$marker"$'\n'"\`$BASE\` との間に自動で解消できないコンフリクトがあります。手動で解消してください。"$'\n\n'
+                body+=$(jq -r '.unresolved[] as $p | "- `" + $p + "`(" + (.reasons[$p] // "") + ")"' <<<"$out")
+                if [ "$(jq '.resolved | length' <<<"$out")" -gt 0 ]; then
+                  body+=$'\n\n'"自動で解消できたファイル(上記が残っているため push していません):"$'\n'
+                  body+=$(jq -r '.resolved[] | "- `" + . + "`"' <<<"$out")
+                fi
+                gh pr comment "$n" --body "$body" >/dev/null
+              fi
+              echo "#$n: 解消できないファイルがあるためラベルを付けました"
+            fi
+            echo "::endgroup::"
+          }
+
+          prs=$(gh pr list --base "$BASE" --state open --limit 200 \
+            --json number,isDraft,isCrossRepository,headRefName,headRefOid,labels \
+            --jq '.[] | select((.isDraft | not) and (.isCrossRepository | not)) | @json')
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            sweep_one "$pr"
+          done <<<"$prs"
