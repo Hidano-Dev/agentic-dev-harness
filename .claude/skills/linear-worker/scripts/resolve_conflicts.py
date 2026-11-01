@@ -10,7 +10,10 @@ git はコンフリクトとして止まる。これを機械的に「両方残�
 - 対象: config の `conflicts.auto_resolve_extensions`(既定 .md / .markdown / .rst / .adoc /
   .asciidoc。.txt は依存・ビルド定義と区別できないので含めない)に拡張子が一致し、
   依存・ビルド定義やエージェントへの指示(requirements*.txt / CMakeLists.txt / CLAUDE.md /
-  AGENTS.md / SKILL.md 等。classify_change.py の NON_DOC_BASENAME)でなく、バイナリでもシンボリックリンクでもなく、ours と theirs の
+  AGENTS.md / SKILL.md 等。classify_change.py の NON_DOC_BASENAME)でなく、任意の階層の
+  `.claude/` `.github/` `.kiro/` `.cursor/` 等(NON_DOC_DIRS)の配下でも、config の
+  `fast_track.text_exclude_paths`(既定 .kiro/ Assets/ Packages/)の配下でも、
+  `.harness/version`(HEAD と MERGE_HEAD の版)の `owned` に含まれる配布物でもなく、バイナリでもシンボリックリンクでもなく、ours と theirs の
   両ステージがあるファイル(add/add は base を空として扱う)。コードファイルは対象外
 - 判定は `git merge-file -p --diff3` の出力の衝突ブロックごとに行う:
   - base が空(両側が同じ位置に追記しただけ)→ ours → theirs の順で連結する。両側で同じ
@@ -50,6 +53,12 @@ NON_DOC_BASENAME = re.compile(
     r"(?:claude|agents|gemini|skill|copilot-instructions)\.md)$",
     re.IGNORECASE,
 )
+# この名前のディレクトリ配下(任意の階層)はエージェントへの指示・CI 定義・spec なので自動解消しない。
+# classify_change.py の NON_DOC_DIRS と同じ(同じテストが一致を検査する)
+NON_DOC_DIRS = {".claude", ".agents", ".codex", ".cursor", ".windsurf", ".gemini", ".github", ".kiro"}
+# config の fast_track.text_exclude_paths の既定(classify_change.py と同じ)
+DEFAULT_TEXT_EXCLUDE_PATHS = [".kiro/", "Assets/", "Packages/"]
+VERSION_REL = ".harness/version"
 # 本文中のマーカー風の行(7 文字の <<<<<<< 等)と区別するため長めにする
 MARKER_SIZE = 30
 M_OURS = b"<" * MARKER_SIZE
@@ -69,19 +78,60 @@ def git(args: list[str], cwd: Path, *, input: bytes | None = None, check: bool =
     return r
 
 
-def load_extensions(config: Path) -> list[str]:
-    if not config.is_file():
-        return DEFAULT_EXTENSIONS
-    cfg = json.loads(config.read_text(encoding="utf-8"))
-    if not isinstance(cfg, dict):
-        raise ResolveError(f"{config} の最上位が JSON オブジェクトではない")
-    conflicts = cfg.get("conflicts") or {}
-    if not isinstance(conflicts, dict):
-        raise ResolveError(f"{config} の conflicts がオブジェクトではない")
-    exts = conflicts.get("auto_resolve_extensions", DEFAULT_EXTENSIONS)
-    if not isinstance(exts, list) or not all(isinstance(e, str) and e for e in exts):
-        raise ResolveError(f"{config} の conflicts.auto_resolve_extensions が文字列の配列ではない")
-    return [e.lower() for e in exts]
+def _str_list(section: dict, key: str, default: list[str], where: str) -> list[str]:
+    value = section.get(key, default)
+    if not isinstance(value, list) or not all(isinstance(e, str) and e for e in value):
+        raise ResolveError(f"{where} が文字列の配列ではない")
+    return value
+
+
+def _section(cfg: dict, key: str, config: Path) -> dict:
+    sec = cfg.get(key) or {}
+    if not isinstance(sec, dict):
+        raise ResolveError(f"{config} の {key} がオブジェクトではない")
+    return sec
+
+
+def load_settings(config: Path) -> dict:
+    cfg: dict = {}
+    if config.is_file():
+        cfg = json.loads(config.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            raise ResolveError(f"{config} の最上位が JSON オブジェクトではない")
+    conflicts = _section(cfg, "conflicts", config)
+    ft = _section(cfg, "fast_track", config)
+    exts = _str_list(conflicts, "auto_resolve_extensions", DEFAULT_EXTENSIONS,
+                     f"{config} の conflicts.auto_resolve_extensions")
+    exclude = _str_list(ft, "text_exclude_paths", DEFAULT_TEXT_EXCLUDE_PATHS, f"{config} の fast_track.text_exclude_paths")
+    return {"extensions": [e.lower() for e in exts], "exclude": exclude, "owned": []}
+
+
+def harness_owned(root: Path) -> list[str]:
+    """`.harness/version` の owned(配布物。配布元で直すもの)。マージの両側の版を合わせる。"""
+    owned: list[str] = []
+    for rev in ("HEAD", "MERGE_HEAD"):
+        r = git(["show", f"{rev}:{VERSION_REL}"], root, check=False)
+        if r.returncode != 0:
+            continue
+        try:
+            data = json.loads(r.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ResolveError(f"{rev} の {VERSION_REL} が JSON として不正")
+        items = data.get("owned") if isinstance(data, dict) else None
+        if isinstance(items, list):
+            owned += [p for p in items if isinstance(p, str) and p and p not in owned]
+    return owned
+
+
+def path_matches(path: str, patterns: list[str]) -> bool:
+    """`/` で終わる値はディレクトリ接頭辞、それ以外は完全一致またはその配下。"""
+    for p in patterns:
+        if p.endswith("/"):
+            if path.startswith(p):
+                return True
+        elif path == p or path.startswith(p + "/"):
+            return True
+    return False
 
 
 def unmerged_entries(root: Path) -> dict[str, dict[int, tuple[str, str]]]:
@@ -192,11 +242,24 @@ def blob(root: Path, sha: str) -> bytes:
     return git(["cat-file", "blob", sha], root).stdout
 
 
-def try_resolve(root: Path, path: str, stages: dict[int, tuple[str, str]], exts: list[str]) -> tuple[bytes | None, str]:
-    if not any(path.lower().endswith(e) for e in exts):
+def excluded_reason(path: str, settings: dict) -> str | None:
+    """拡張子以外の理由で自動解消しないパスなら理由を返す。"""
+    parts = path.split("/")
+    if NON_DOC_BASENAME.match(parts[-1]) or NON_DOC_DIRS & set(parts[:-1]):
+        return "依存・ビルド定義またはエージェントへの指示"
+    if path_matches(path, settings["exclude"]):
+        return "除外パス(fast_track.text_exclude_paths)"
+    if path_matches(path, settings["owned"]):
+        return "配布物(.harness/version の owned)"
+    return None
+
+
+def try_resolve(root: Path, path: str, stages: dict[int, tuple[str, str]], settings: dict) -> tuple[bytes | None, str]:
+    if not any(path.lower().endswith(e) for e in settings["extensions"]):
         return None, "対象外の拡張子"
-    if NON_DOC_BASENAME.match(path.rsplit("/", 1)[-1]):
-        return None, "依存・ビルド定義またはエージェントへの指示"
+    reason = excluded_reason(path, settings)
+    if reason:
+        return None, reason
     if 2 not in stages or 3 not in stages:
         return None, "片側で削除されている(modify/delete)"
     if any(mode == "120000" for mode, _ in stages.values()):
@@ -240,12 +303,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         top = git(["rev-parse", "--show-toplevel"], Path.cwd()).stdout.decode().strip()
         root = Path(top)
-        exts = load_extensions(Path(a.config) if a.config else root / CONFIG_REL)
+        settings = load_settings(Path(a.config) if a.config else root / CONFIG_REL)
+        settings["owned"] = harness_owned(root)
         resolved: list[str] = []
         unresolved: list[str] = []
         reasons: dict[str, str] = {}
         for path, stages in sorted(unmerged_entries(root).items()):
-            content, reason = try_resolve(root, path, stages, exts)
+            content, reason = try_resolve(root, path, stages, settings)
             if content is None:
                 unresolved.append(path)
                 reasons[path] = reason
