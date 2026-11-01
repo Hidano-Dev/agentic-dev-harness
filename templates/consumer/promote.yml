@@ -1,0 +1,185 @@
+# =============================================================================
+# 昇格ワークフロー(取り込み側リポジトリに置く)
+# -----------------------------------------------------------------------------
+# 既定ブランチ(例: develop)→ リリースブランチ(例: main)の Release PR を常に 1 本維持し、
+# リリースブランチへの push(Release PR のマージ・hotfix)を既定ブランチへ戻す back-merge PR を作る。
+#
+# - config(.kiro/orchestration/config.json)の github.release_branch が null・未設定なら
+#   何もしない(単一ブランチ運用)。既定ブランチは github.default_branch(無ければリポジトリの既定)
+# - 既定ブランチへの push: 既定ブランチがリリースブランチより進んでいれば、open な Release PR
+#   (タイトル "Release: <default> → <release>"、ラベル release)が無ければ作り、あれば本文を更新する。
+#   本文は配布物の .claude/skills/linear-worker/scripts/release_notes.py が生成する
+#   (マージされた PR の一覧、コア・配布物・指示文の変更の強調、diffstat)。
+#   Release PR は auto-merge を予約しない(人間がレビューしてマージする)
+# - リリースブランチへの push: リリースブランチが既定ブランチの祖先でなければ、
+#   ブランチ back-merge/<release>-<sha7> を作って既定ブランチへの PR(ラベル back-merge)を作り、
+#   auto-merge(merge commit)を予約する。古い back-merge PR はクローズしてブランチを削除する
+# - workflow_dispatch では両方を行う
+# - PR 作成・本文更新・push は GitHub App のトークンで行う(GITHUB_TOKEN で作った PR では CI が走らないため)。
+#   secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無ければ warning を出して何もしない。
+#   App に必要な権限: Contents / Pull requests / Issues の Read and write、
+#   Workflows の Read and write(ワークフロー変更を含むコミットを back-merge ブランチへ push するため)
+# - push トリガーのブランチ名は固定で書いている。既定・リリースブランチがこれ以外の名前なら追加する
+#   (どちらでもないブランチへの push では何もしない)
+#
+# 配置先: .github/workflows/promote.yml
+# =============================================================================
+name: Promote
+
+on:
+  push:
+    branches: [develop, main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch は GITHUB_TOKEN(checkout が保存する認証)で行い、push だけ App トークンで行う
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read branch settings
+        id: cfg
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO_DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from pathlib import Path
+          p = Path(".kiro/orchestration/config.json")
+          cfg = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+          gh = cfg.get("github") or {}
+          default = gh.get("default_branch") or os.environ.get("REPO_DEFAULT") or ""
+          release = gh.get("release_branch") or ""
+          mode = "none"
+          if default and release and default != release:
+              if os.environ["EVENT_NAME"] == "workflow_dispatch":
+                  mode = "both"
+              elif os.environ["REF_NAME"] == default:
+                  mode = "promote"
+              elif os.environ["REF_NAME"] == release:
+                  mode = "backmerge"
+          print(f"default={default}")
+          print(f"release={release}")
+          print(f"mode={mode}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Check GitHub App credentials
+        id: app
+        if: steps.cfg.outputs.mode != 'none'
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため、昇格処理をスキップしました(GITHUB_TOKEN で作った PR では CI が走らないため App トークンが必要です)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App token
+        id: token
+        if: steps.cfg.outputs.mode != 'none' && steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+
+      - name: Create or update Release PR
+        if: (steps.cfg.outputs.mode == 'promote' || steps.cfg.outputs.mode == 'both') && steps.app.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          DEF: ${{ steps.cfg.outputs.default }}
+          REL: ${{ steps.cfg.outputs.release }}
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags origin "+refs/heads/$DEF:refs/remotes/origin/$DEF" "+refs/heads/$REL:refs/remotes/origin/$REL"
+          ahead=$(git rev-list --count "origin/$REL..origin/$DEF")
+          # back-merge だけで進んだ(ツリーが同じ)場合は昇格するものが無い
+          if [ "$ahead" -eq 0 ] || git diff --quiet "origin/$REL" "origin/$DEF"; then
+            echo "$DEF は $REL に対して昇格する変更がありません"
+            exit 0
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          s=.claude/skills/linear-worker/scripts/release_notes.py
+          if [ -f "$s" ]; then
+            python3 -I "$s" --base "origin/$REL" --head "origin/$DEF" --output "$notes"
+          else
+            echo "::notice::$s が無いため簡易な本文にしました(Harness Sync で配布物を最新化してください)"
+            { echo "\`$DEF\` → \`$REL\` の昇格 PR です。"; echo; echo '```'; git diff --stat "origin/$REL...origin/$DEF"; echo '```'; } > "$notes"
+          fi
+          # PR 本文の上限(65536 文字)に収める
+          python3 -I -c '
+          import sys
+          p = sys.argv[1]
+          t = open(p, encoding="utf-8").read()
+          if len(t) > 60000:
+              open(p, "w", encoding="utf-8").write(t[:60000] + "\n\n…(本文が長すぎるため省略しました)\n")
+          ' "$notes"
+          existing=$(gh pr list --base "$REL" --head "$DEF" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body-file "$notes" >/dev/null
+            echo "Release PR #$existing の本文を更新しました"
+          else
+            gh label create release --color 0e8a16 --description "既定ブランチからリリースブランチへの昇格 PR" >/dev/null 2>&1 || true
+            gh pr create --base "$REL" --head "$DEF" --title "Release: $DEF → $REL" --body-file "$notes" --label release
+          fi
+
+      - name: Create back-merge PR
+        if: (steps.cfg.outputs.mode == 'backmerge' || steps.cfg.outputs.mode == 'both') && steps.app.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO: ${{ github.repository }}
+          DEF: ${{ steps.cfg.outputs.default }}
+          REL: ${{ steps.cfg.outputs.release }}
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags origin "+refs/heads/$DEF:refs/remotes/origin/$DEF" "+refs/heads/$REL:refs/remotes/origin/$REL"
+          if git merge-base --is-ancestor "origin/$REL" "origin/$DEF"; then
+            echo "$REL は $DEF に取り込み済みです"
+            exit 0
+          fi
+          sha=$(git rev-parse "origin/$REL")
+          branch="back-merge/$REL-${sha:0:7}"
+          open=$(gh pr list --base "$DEF" --state open --limit 100 --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("back-merge/")) | "\(.number) \(.headRefName)"')
+          current=""
+          while read -r num ref; do
+            [ -n "$num" ] || continue
+            if [ "$ref" = "$branch" ]; then
+              current="$num"
+            else
+              # 新しい $REL は古い back-merge の内容を含むので置き換える
+              gh pr close "$num" --delete-branch --comment "新しい back-merge($branch)に置き換えました。" >/dev/null || true
+            fi
+          done <<<"$open"
+          if [ -n "$current" ]; then
+            echo "back-merge PR #$current は作成済みです"
+            exit 0
+          fi
+          # checkout が保存した GITHUB_TOKEN の認証ヘッダを空にして(空の値でリストが空になる)、
+          # App トークンで push する(GITHUB_TOKEN の push では後続のワークフローが走らない)
+          git -c "http.https://github.com/.extraheader=" push -q \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$sha:refs/heads/$branch"
+          gh label create back-merge --color c5def5 --description "リリースブランチを既定ブランチへ戻す PR" >/dev/null 2>&1 || true
+          body="\`$REL\`(${sha:0:7})の変更を \`$DEF\` へ戻す back-merge PR です。必須チェックが通れば自動でマージされます。"
+          url=$(gh pr create --base "$DEF" --head "$branch" --title "Back-merge: $REL → $DEF" --body "$body" --label back-merge)
+          echo "$url"
+          if ! gh pr merge "$url" --auto --merge; then
+            echo "::warning::auto-merge を予約できませんでした(リポジトリ設定の Allow auto-merge を確認してください): $url"
+          fi
