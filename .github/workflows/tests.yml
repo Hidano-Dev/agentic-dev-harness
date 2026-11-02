@@ -22,6 +22,8 @@ jobs:
           python-version: '3.12'
       - name: Run unit tests
         run: |
+          # test_workflow_scripts がワークフローを YAML として読むのに使う(無いとスキップされる)
+          python -m pip install --quiet pyyaml
           git config --global user.name "ci"
           git config --global user.email "ci@example.invalid"
           python -m unittest discover -s tests -v

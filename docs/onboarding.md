@@ -31,7 +31,8 @@
      | Workflows | Read and write | `.github/workflows/` の配布物の更新 |
      | Issues | Read and write | ラベルの作成・付け外し、コメント |
      | Administration | Read and write | 既定ブランチの変更・auto-merge の有効化・branch protection(`configure_repo.py`) |
-     | Actions / Checks | Read | 必須チェックにする CI の推定 |
+     | Actions | Read and write | 必須チェックにする CI の推定、回数上限後に人間が Approve した PR の `codex-review` の再実行 |
+     | Checks | Read | 必須チェックにする CI の推定 |
      | Metadata | Read | (必須) |
 
   3. 作成後に Private key を生成し、App を **All repositories**(または対象リポジトリすべて)にインストールする

@@ -22,7 +22,9 @@
 # - 何をするか(skip / capped / delta / full)は review_plan.py が決める。前回の情報は
 #   post_review.py が PR に埋めた隠しマーカー(github-actions[bot] のものだけ信頼)から読む
 #   - skip:   fast track、または前回レビュー済みのヘッドから PR 自身の差分が変わっていない
-#   - capped: レビュー回数が review.action.max_rounds(既定 3)に達した → レビューせず成功
+#   - capped: レビュー回数が review.action.max_rounds(既定 3)に達した → レビューせず、現在のヘッドへの
+#             人間の Approve があれば成功、無ければ失敗(fail closed。Approve すると
+#             policy-gate-relabel.yml がこのワークフローの失敗した実行を再実行する)
 #   - delta:  前回からの追加分だけを見る(前回の P0 / P1 の解消確認 + 変更行の新規 P0 / P1)
 #   - full:   初回、または force-push / rebase で前回の SHA が祖先でない
 # - Codex の失敗(出力不正を含む)は 1 回だけ再試行。それでも失敗したら review.fail_open
@@ -115,6 +117,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ steps.plan.outputs.mode }}
         run: python3 -I "$SCRIPTS/post_review.py" --kind "$MODE" --plan "$RUNNER_TEMP/codex-plan.json" --pr "$PR_NUMBER" --config "$HARNESS_CONFIG"
+
+      # 回数上限の後は無審査で通さない: 現在のヘッドへの人間の Approve を必須にする
+      - name: Enforce round cap
+        if: ${{ steps.plan.outputs.mode == 'capped' }}
+        env:
+          APPROVED_BY: ${{ steps.plan.outputs.approved_by }}
+        run: |
+          if [ -n "$APPROVED_BY" ]; then
+            echo "::notice::レビュー回数の上限に達していますが、現在のヘッドは人間が承認済みです($APPROVED_BY)"
+          else
+            echo "::error::レビュー回数の上限(review.action.max_rounds)に達しました。人間が現在のヘッドを Approve するまでこのチェックは失敗します"
+            exit 1
+          fi
 
       - name: Check OpenAI API key
         id: key

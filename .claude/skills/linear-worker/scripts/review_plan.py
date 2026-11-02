@@ -10,9 +10,10 @@
           配布元との一致は policy-gate が検証するので、ここでは形だけを見る
       (a) fast track(PR 全体、または前回レビュー済みヘッドからの追加分が `classify_change.py` で 0)
       (b) 前回レビュー済みのヘッドと同じ SHA
-      (c) PR 自身の差分(merge-base からの `git diff -U0` の `git patch-id --stable`)が前回と一致
+      (c) PR 自身の差分の指紋(`patch_id()`。PR が触るファイルの両側の blob ID)が前回と一致
           (base の取り込み・同じ内容への rebase だけ)
-    - capped: これまでのレビュー回数が `review.action.max_rounds`(既定 3)に達した
+    - capped: これまでのレビュー回数が `review.action.max_rounds`(既定 3)に達した。レビューせずに
+      **現在のヘッドへの人間の Approve を求める**(`approved_by` が空ならワークフローはチェックを失敗させる)
     - delta: 前回レビュー済み SHA がヘッドの祖先 → 前回からの追加分だけを見る
     - full: 初回(前回レビュー無し、または前回 SHA がヘッドの祖先でない)
   - base: Codex に見せる差分の起点(full = merge-base、delta = 前回 SHA。skip / capped は merge-base)
@@ -35,6 +36,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -81,14 +83,19 @@ DIFF_OPTS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
 
 
 def patch_id(base: str, head: str) -> str:
-    """PR 自身の差分(merge-base(base, head) からの -U0 diff)の patch-id。差分が無ければ空文字列。"""
+    """PR 自身の差分の指紋。差分が無ければ空文字列。
+
+    merge-base(base, head) → head で変わった各ファイルの「パス・モード・両側の blob ID」の一覧
+    (`git diff --raw --no-abbrev`)の SHA-256。PR が触るファイルの中身が両側ともバイト単位で同じときだけ
+    一致する(`git patch-id --stable` は空白を無視するため、文字列リテラル内やインデントの変更を
+    見逃していた)。base 側の取り込みが PR の触るファイルに及んだ場合は不一致 = 再レビューになる(安全側)。
+    """
     mb = merge_base(base, head)
-    diff = subprocess.run(["git", "diff", "-U0", "--binary", *DIFF_OPTS, mb, head],
-                          check=True, capture_output=True).stdout
-    if not diff.strip():
+    raw = subprocess.run(["git", "diff", "--raw", "--no-abbrev", "--no-renames", "-z", mb, head],
+                         check=True, capture_output=True).stdout
+    if not raw.strip(b"\0\n "):
         return ""
-    out = subprocess.run(["git", "patch-id", "--stable"], input=diff, check=True, capture_output=True).stdout
-    return out.decode("ascii", errors="replace").split()[0] if out.strip() else ""
+    return "tree-" + hashlib.sha256(raw).hexdigest()
 
 
 def is_fast_track(base: str, head: str, config: str) -> bool:
@@ -283,10 +290,12 @@ def write_github_output(plan: dict) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
-    keys = ("mode", "round", "base", "head", "prev_sha", "model", "effort", "announce", "fail_open")
+    keys = ("mode", "round", "base", "head", "prev_sha", "model", "effort", "announce", "fail_open", "approved_by")
     with open(path, "a", encoding="utf-8") as fh:
         for k in keys:
             v = plan.get(k)
+            if isinstance(v, list):
+                v = ",".join(str(x) for x in v)
             v = "" if v is None else (str(v).lower() if isinstance(v, bool) else str(v))
             fh.write(f"{k}={v.replace(chr(10), ' ')}\n")
 
@@ -310,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
         repo = common.resolve_repo(a.repo, cfg)
         markers = fetch_markers(repo, a.pr) if settings["provider"] == "action" else []
         plan = decide(base=a.base, head=a.head, markers=markers, settings=settings, config=a.config)
+        if plan["mode"] == "capped":
+            # 上限後は Codex を呼ばない代わりに人間の承認を必須にする(fail closed)
+            plan["approved_by"] = common.human_approvers(common.fetch_reviews(repo, a.pr), plan["head"])
         if plan["mode"] in ("full", "delta"):
             # post_review.py が Codex の実行後に PR ヘッドの作業ツリーで git を実行しなくて済むよう、
             # インラインコメントを付けられる行をここで計算しておく(キーの順序 = 差分の順序)

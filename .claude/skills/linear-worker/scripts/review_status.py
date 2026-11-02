@@ -13,7 +13,9 @@
     clean       現在のヘッドのレビューが完了し、未解決の P0 / P1 スレッドが無い
     findings    レビューが完了し(または引き継ぎ / 上限)、未解決の P0 / P1 スレッドが残っている
                 (action: スレッドにできず本文にだけ載った P0 / P1 = outside_diff_p1 が現在のヘッドにある場合も)
-    skipped     レビュー不要・引き継ぎ・回数上限・draft(未解決の P0 / P1 スレッドは無い)
+    skipped     レビュー不要・引き継ぎ・回数上限(人間が承認済み)・draft(未解決の P0 / P1 スレッドは無い)
+    capped      回数上限(review.action.max_rounds)に達し、現在のヘッドへの人間の Approve を待っている
+                (チェックは失敗。エージェントは駐機して人間へエスカレーションする)
     unavailable レビューを実行できなかった(チェック失敗・fail-open・review.bot が null)
     timeout     現在のヘッドの push(app は依頼との遅い方)から review.wait_minutes を超えても完了しない
 
@@ -166,14 +168,19 @@ def status_action(repo: str, pr: int, settings: dict) -> dict:
         # OPENAI_API_KEY 未設定・Codex の失敗。fail_open なら成功、false なら失敗のチェックと一緒に残る
         return dict(out, state="unavailable", review_url=marker.get("url"), mode="unavailable",
                     reason=marker.get("reason") or "Codex を実行できなかった")
-    if conclusion not in ("success", "neutral", "skipped"):
-        return dict(out, state="unavailable", reason=f"チェック codex-review が {conclusion}")
+    if marker and marker["mode"] == "capped" and conclusion not in ("success", "neutral", "skipped"):
+        # 回数上限に達し、現在のヘッドへの人間の Approve を待っている(エージェントは駐機してエスカレーション)
+        return dict(out, state="capped", review_url=marker.get("url"), mode="capped", round=marker["round"],
+                    reason="レビュー回数の上限に達した。現在のヘッドへの人間の Approve 待ち")
     if marker:
-        # スレッドにできなかった(本文にだけ載った)P0 / P1。thread が無い古い記録は inline で代用する
+        # スレッドにできなかった(本文にだけ載った)P0 / P1。thread が無い古い記録は inline で代用する。
+        # post_review.py はこれが 1 件でもあるとチェックを失敗させる
         out.update(review_url=marker.get("url"), mode=marker["mode"], round=marker["round"],
                    outside_diff_p1=sum(1 for f in marker["findings"]
                                        if f.get("severity") in common.BLOCKING
                                        and f.get("thread", f.get("inline")) is False))
+    if conclusion not in ("success", "neutral", "skipped") and not out.get("outside_diff_p1"):
+        return dict(out, state="unavailable", reason=f"チェック codex-review が {conclusion}")
     if p1:
         return dict(out, state="findings", reason=f"未解決の P0 / P1 スレッドが {p1} 件")
     if out.get("outside_diff_p1"):

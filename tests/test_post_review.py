@@ -254,6 +254,28 @@ class PostReviewTest(GitRepoTestCase):
         out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([]))
         self.assertFalse(out["posted"])
         self.assertEqual(self.posted, [])
+        self.assertEqual(out["body_only"], 0)
+
+    def test_rerun_still_counts_unthreaded_blocking(self):
+        f = {"severity": "P1", "path": "x", "line": 1, "title": "t", "body": "b", "inline": False, "thread": False}
+        self.markers = [{"sha": self.head, "mode": "full", "round": 1, "url": "u", "findings": [f]}]
+        out = post_review.post("review", self.plan, repo="o/r", pr=5, result=self.result([]))
+        self.assertEqual((out["posted"], out["body_only"]), (False, 1))
+
+    def test_main_fails_when_blocking_has_no_thread(self):
+        # 削除だけの PR などコメントできる行が 1 つも無い → P1 は本文にしか載らない → チェックを失敗させる
+        tmp = self.dir
+        plan_f = tmp / "plan.json"
+        res_f = tmp / "res.json"
+        plan_f.write_text(json.dumps(dict(self.plan, commentable={})), encoding="utf-8")
+        res_f.write_text(json.dumps(self.result(
+            [{"severity": "P1", "path": "src/gone.py", "line": 1, "title": "t", "body": "b"}])), encoding="utf-8")
+        with redirect_stdout(io.StringIO()) as out:
+            rc = post_review.main(["--kind", "review", "--plan", str(plan_f), "--result", str(res_f),
+                                   "--pr", "5", "--repo", "o/r", "--config", str(tmp / "none.json")])
+        self.assertEqual(rc, 3)
+        self.assertIn("::error::", out.getvalue())
+        self.assertEqual(len(self.kinds("review")), 1)
 
     def test_review_requires_full_or_delta(self):
         with self.assertRaises(ValueError):

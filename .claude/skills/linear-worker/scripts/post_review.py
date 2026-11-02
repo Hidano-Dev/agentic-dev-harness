@@ -15,7 +15,8 @@
 - `--check-result FILE`: Codex の出力がスキーマどおりか検査するだけ(0 = 正常、1 = 不正)
 
 同じヘッド・同じ mode のマーカーがすでにあれば投稿しない(ジョブの再実行で重複させない)。
-終了コード: 0 = 投稿した / 投稿不要、1 = 結果が不正(--check-result / --kind review)、2 = エラー。
+終了コード: 0 = 投稿した / 投稿不要、1 = 結果が不正(--check-result / --kind review)、2 = エラー、
+3 = スレッドにできなかった P0 / P1 がある(チェックを失敗させてマージを止める。再実行でも同じ)。
 標準ライブラリのみ使用。
 """
 from __future__ import annotations
@@ -212,7 +213,8 @@ def notice_body(kind: str, plan: dict, reason: str) -> str:
         text = (f"### Codex レビュー: 回数上限に達しました(`{head}`)\n\n"
                 f"レビュー回数が上限(`review.action.max_rounds` = {plan.get('max_rounds')})に達したため、"
                 f"このヘッドは Codex でレビューしていません。未解決のスレッドは引き続き解決が必要です。"
-                f"追加の確認は人間のレビュー(develop → main の Release PR を含む)に委ねます。")
+                f"**人間(OWNER / MEMBER / COLLABORATOR)が現在のヘッドを Approve するまで、チェック "
+                f"`codex-review` は失敗のままです**(Approve すると Policy Gate Relabel が再実行します)。")
     else:
         text = (f"### Codex レビュー: レビュー不可(fail-open)(`{head}`)\n\n"
                 f"Codex レビューを実行できませんでした({common.neutralize(reason or '理由不明')})。"
@@ -265,7 +267,12 @@ def post(kind: str, plan: dict, *, repo: str, pr: int, result: dict | None = Non
         raise ValueError(f"plan の mode が {mode} なのでレビューは投稿しない")
     existing = already_posted(fetch_markers(repo, pr), plan["head"], mode)
     if existing:
-        return {"posted": False, "reason": "同じヘッド・mode のマーカーが既にある", "url": existing.get("url")}
+        # ジョブの再実行: 投稿は重ねないが、スレッドにできなかった P0 / P1 は記録から数え直して
+        # 終了コードに反映する(再実行でチェックが緑にならないように)
+        unthreaded = sum(1 for f in existing.get("findings") or []
+                         if f.get("severity") in common.BLOCKING and f.get("thread", f.get("inline")) is False)
+        return {"posted": False, "reason": "同じヘッド・mode のマーカーが既にある", "url": existing.get("url"),
+                "body_only": unthreaded if kind == "review" else 0}
 
     if kind != "review":
         findings = (plan.get("prev_findings") or []) if kind == "skip" else []
@@ -372,6 +379,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::git に失敗: {(e.stderr or b'').decode(errors='replace').strip()}")
         return 2
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    if out.get("body_only"):
+        # スレッドの無い P0 / P1 は "Require conversation resolution" で止まらない。auto-merge を
+        # 予約済みの PR がそのままマージされないよう、チェックを失敗させる(修正の push で再レビュー)
+        print(f"::error::スレッドにできなかった P0 / P1 が {out['body_only']} 件あります(レビュー本文を参照)。"
+              "修正して push してください")
+        return 3
     return 0
 
 

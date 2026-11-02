@@ -572,7 +572,8 @@ fast track の PR でも、外部レビューや人間が自発的に投稿し�
    (Monitor / ScheduleWakeup 等。bash の `while sleep` ループは使わない)。上限は `review.wait_minutes`
    (現在ヘッドの push から)。`findings` なら下記の重大度ベースの指摘処理で直して push し(予約は
    維持される。`--match-head-commit` は予約時のヘッドにだけ効く)、`clean` / `skipped` / `unavailable` なら
-   何もしない。上限に達したら待つのをやめる。
+   何もしない。`capped`(レビュー回数の上限。現在ヘッドへの人間の Approve が無い限りチェックが失敗のまま)
+   なら §3 の駐機手順で `駐機理由: merge-approval` として人間へエスカレーションする。上限に達したら待つのをやめる。
 5. §3「自動マージ待ちの駐機」で claim を解放して §5 の報告で終了する。後から届いた P0/P1・CI 失敗・
    自動解消できなかったコンフリクトは §1-A の巡回が拾う。
 
@@ -581,7 +582,8 @@ fast track の PR でも、外部レビューや人間が自発的に投稿し�
 - **`action`**(既定): `codex-review` ワークフローが PR の作成・push ごとに 1 回だけ自動で走り、
   結果を指摘の有無にかかわらず **1 件の PR review** として投稿する(P0/P1 は該当行のスレッド、
   P2 以下は本文の一覧)。2 回目以降は前回からの差分だけを見て、前回の指摘の解消と変更行の P0/P1 だけを
-  指摘する。`review.action.max_rounds` 回で打ち止め。作業ブランチの取り込み・コンフリクトの自動解消だけの
+  指摘する。`review.action.max_rounds` 回で打ち止め(以後のヘッドは人間が Approve するまで `codex-review` が
+  失敗する = `capped`。エージェントは迂回しない)。作業ブランチの取り込み・コンフリクトの自動解消だけの
   push は再レビューしない。ワーカーはレビューを**依頼しない**。レビューできなかった場合
   (`unavailable`)は `review.fail_open` に従う(true なら他のゲートで進む。その旨はワークフローが PR に記録する)。
 - **`app`**(後方互換): レビュー要の push のたびに `review.bot.request_comment` を **1 ヘッド 1 回だけ**

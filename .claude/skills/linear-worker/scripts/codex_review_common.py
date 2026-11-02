@@ -368,6 +368,36 @@ def fetch_review_threads(repo: str, pr: int) -> list[dict]:
     return threads
 
 
+TRUSTED_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+
+
+def human_approvers(reviews: list[dict], head: str) -> list[str]:
+    """head に対する人間の承認者(policy_gate.py の human_approval と同じ規則)。
+
+    レビュアーごとの最新の判断(APPROVED / CHANGES_REQUESTED / DISMISSED)が APPROVED で commit_id が
+    head、user.type が User(Bot でない)、author_association が OWNER / MEMBER / COLLABORATOR。
+    誰かの CHANGES_REQUESTED が残っていれば空。
+    """
+    latest: dict[str, dict] = {}
+    for r in reviews:
+        user = r.get("user") or {}
+        login = user.get("login") or ""
+        if user.get("type") != "User" or login.endswith("[bot]"):
+            continue
+        if r.get("author_association") not in TRUSTED_ASSOCIATIONS:
+            continue
+        if r.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            continue
+        latest[login] = r
+    if any(r["state"] == "CHANGES_REQUESTED" for r in latest.values()):
+        return []
+    return sorted(l for l, r in latest.items() if r["state"] == "APPROVED" and r.get("commit_id") == head)
+
+
+def fetch_reviews(repo: str, pr: int) -> list[dict]:
+    return gh_api_list(f"repos/{repo}/pulls/{int(pr)}/reviews")
+
+
 def fetch_markers(repo: str, pr: int) -> list[dict]:
     comments = gh_api_list(f"repos/{repo}/issues/{int(pr)}/comments")
     reviews = gh_api_list(f"repos/{repo}/pulls/{int(pr)}/reviews")

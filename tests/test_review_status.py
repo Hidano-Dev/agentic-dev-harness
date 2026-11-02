@@ -150,8 +150,20 @@ class ActionProviderTest(unittest.TestCase):
         self.gh.comments.append({"id": 9, "user": GHA, "body": marker_body(HEAD, "capped", 3),
                                  "created_at": "2026-11-01T11:45:00Z"})
         s = self.status()
-        self.assertEqual(s["state"], "skipped")
+        self.assertEqual(s["state"], "skipped")  # 人間が承認済みでチェックが成功
         self.assertIn("上限", s["reason"])
+        self.completed("failure")  # 承認待ちでチェックが失敗
+        s = self.status()
+        self.assertEqual(s["state"], "capped")
+        self.assertIn("Approve", s["reason"])
+
+    def test_body_only_p1_with_failed_check_is_findings(self):
+        # post_review.py はスレッドにできなかった P0 / P1 があるとチェックを失敗させる
+        self.completed("failure")
+        f = {"severity": "P1", "path": "a", "line": 1, "title": "t", "body": "b", "inline": False, "thread": False}
+        self.add_review_marker(HEAD, findings=[f])
+        s = self.status()
+        self.assertEqual((s["state"], s["outside_diff_p1"]), ("findings", 1))
 
     def test_no_marker_is_skipped(self):
         self.completed()

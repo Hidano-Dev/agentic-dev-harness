@@ -106,7 +106,9 @@ Linear 連携・自動マージ・ブランチ構成など「リポジトリご�
   - **全体**: 初回
   - **差分のみ**: 2 回目以降。前回の指摘が直ったかと、変更した行の P0/P1 だけを見る(毎回新しい P2 が
     出続けて収束しない事態を防ぐ)
-  - **上限**: config の `review.action.max_rounds`(既定 3)回レビューした PR は、それ以上レビューしない
+  - **上限**: config の `review.action.max_rounds`(既定 3)回レビューした PR は、それ以上レビューしない。
+    代わりに**現在のヘッドへの人間の Approve を求め**、Approve が無い間は `codex-review` のチェックが失敗する
+    (上限後の変更が無審査でマージされないように。Approve すると `policy-gate-relabel` が再実行する)
 - 結果は**指摘の有無にかかわらず 1 件の PR review** として投稿される。P0/P1 は該当行のスレッド、P2 以下は
   review 本文の一覧(スレッドを作らない)。`codex-review` のチェックは「このヘッドのレビューが完了した」ことを
   示し、指摘があっても成功になる(マージを止めるのは未解決の P0/P1 スレッド)。
@@ -114,7 +116,8 @@ Linear 連携・自動マージ・ブランチ構成など「リポジトリご�
   その旨を PR に記録してチェックを成功させる(他のゲートでマージへ進む)。false ならチェックを失敗させ、
   人間が対応する。
 - **状態の確認**: `python3 .claude/skills/linear-worker/scripts/review_status.py --pr <N>` が
-  `pending / running / clean / findings / skipped / unavailable / timeout` を JSON で返す。エージェントは
+  `pending / running / clean / findings / skipped / capped / unavailable / timeout` を JSON で返す
+  (`capped` は回数上限で人間の Approve 待ち。駐機してエスカレーションする)。エージェントは
   コメントやリアクションを自分で読み解かず、この出力で判断する。
 - **待ち方**: 指摘への対応をこのセッションで済ませたい場合だけ、Monitor / ScheduleWakeup 等で 5〜10 分間隔に
   `review_status.py` を見る(短間隔のビジーポーリング・bash の `while sleep` ループはしない)。上限は config の

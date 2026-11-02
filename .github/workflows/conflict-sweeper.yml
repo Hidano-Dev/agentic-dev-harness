@@ -223,8 +223,9 @@ jobs:
               return 0
             fi
 
-            out=$(python3 -I "$tools/resolve_conflicts.py" --config "$cfg_copy")
-            rc=$?
+            # 既定のシェルは bash -e なので、非 0(1 = 解消できないファイルあり)で step ごと落ちないよう || で受ける
+            rc=0
+            out=$(python3 -I "$tools/resolve_conflicts.py" --config "$cfg_copy") || rc=$?
             echo "$out"
 
             if [ "$rc" -eq 0 ]; then

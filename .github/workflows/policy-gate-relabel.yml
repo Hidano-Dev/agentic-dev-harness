@@ -11,6 +11,8 @@
 #   (secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY。無ければ warning で終了 — その場合は
 #   Actions 画面から policy-gate を手動で Re-run する)
 # - PR は workflow_run.pull_requests から取り、空(fork の PR 等)なら head の sha に紐づく PR を引く
+# - あわせて、そのヘッドで失敗している codex-review(回数上限で人間の Approve 待ち等)を再実行する
+#   (App に Actions: Read and write が要る)
 # - 配置先: .github/workflows/policy-gate-relabel.yml(Harness Sync が更新する)
 # =============================================================================
 name: Policy Gate Relabel
@@ -77,3 +79,24 @@ jobs:
             gh pr edit "$n" -R "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null 2>&1 || true
             gh pr edit "$n" -R "$GITHUB_REPOSITORY" --add-label "$LABEL"
           done
+
+      # codex-review は回数上限(capped)の後、現在のヘッドへの人間の Approve が無いと失敗する。
+      # Approve されたら、そのヘッドで失敗している最新の codex-review を再実行して緑にする
+      # (判定は再実行された base 側のワークフローが行う。承認が無ければ再び失敗するだけ)
+      - name: Re-run failed codex-review
+        if: steps.secrets.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CODEX_WORKFLOW: codex-review.yml
+        run: |
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CODEX_WORKFLOW" >/dev/null 2>&1; then
+            echo "::notice::$CODEX_WORKFLOW が無いため再実行しません"; exit 0
+          fi
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CODEX_WORKFLOW/runs?head_sha=$HEAD_SHA&per_page=1" \
+            --jq '.workflow_runs[0] | select(.status == "completed" and .conclusion == "failure") | .id')
+          if [ -z "$run" ]; then
+            echo "$HEAD_SHA の codex-review に失敗した実行はありません"; exit 0
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null \
+            || echo "::warning::codex-review(run $run)を再実行できませんでした(App の Actions 権限を確認してください)"

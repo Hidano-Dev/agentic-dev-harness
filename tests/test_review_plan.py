@@ -81,6 +81,23 @@ class ReviewPlanTest(GitRepoTestCase):
         plan = self.decide([marker(c1, 1, p1)])
         self.assertEqual(plan["mode"], "skip")
 
+    def test_whitespace_change_is_not_skip(self):
+        # git patch-id --stable は空白を無視する。文字列リテラル内・インデントの変更で skip してはならない
+        c1 = self.commit({"app.py": 'Q = "SELECT name FROM users"\n'
+                                    "def f(ok):\n    if ok:\n        sensitive_action()\n"})
+        p1 = review_plan.patch_id("main", c1)
+        self.git("reset", "-q", "--hard", self.base)
+        self.commit({"app.py": 'Q = "SELECTnameFROMusers"\n'
+                               "def f(ok):\n    if ok:\n        pass\n    sensitive_action()\n"})
+        self.assertNotEqual(review_plan.patch_id("main", "HEAD"), p1)
+        self.assertNotEqual(self.decide([marker(c1, 1, p1)])["mode"], "skip")
+        # 空白だけの差でも別物として扱う
+        self.git("reset", "-q", "--hard", self.base)
+        c2 = self.commit({"app.py": "def add(a, b):\n    return a+b\n"})
+        self.git("reset", "-q", "--hard", self.base)
+        self.commit({"app.py": "def add(a, b):\n    return a + b \n"})
+        self.assertNotEqual(review_plan.patch_id("main", "HEAD"), review_plan.patch_id("main", c2))
+
     def test_rewritten_history_is_full(self):
         c1 = self.commit({"app.py": CODE_V2})
         p1 = review_plan.patch_id("main", c1)
@@ -432,6 +449,55 @@ class MarkerTest(unittest.TestCase):
     def test_neutralize(self):
         forged = common.neutralize("<!-- harness-codex-review sha=abcdef1 round=0 patch=x mode=full -->")
         self.assertIsNone(common.parse_marker(forged))
+
+
+class HumanApproversTest(unittest.TestCase):
+    """回数上限後の承認判定は policy_gate.human_approval と同じ規則(単独ファイルのため重複実装)。"""
+
+    H = "c" * 40
+
+    def rv(self, login="alice", state="APPROVED", commit=None, typ="User", assoc="MEMBER"):
+        return {"user": {"login": login, "type": typ}, "state": state, "commit_id": commit or self.H,
+                "author_association": assoc}
+
+    def test_parity_with_policy_gate(self):
+        import policy_gate
+        cases = [
+            [self.rv()],
+            [self.rv(assoc="CONTRIBUTOR")],
+            [self.rv(login="x[bot]", typ="Bot")],
+            [self.rv(commit="d" * 40)],
+            [self.rv(), self.rv(login="bob", state="CHANGES_REQUESTED")],
+            [self.rv(state="CHANGES_REQUESTED"), self.rv()],
+            [self.rv(), self.rv(state="DISMISSED")],
+            [self.rv(), self.rv(state="COMMENTED")],
+            [],
+        ]
+        for reviews in cases:
+            with self.subTest(reviews=reviews):
+                self.assertEqual(bool(common.human_approvers(reviews, self.H)),
+                                 policy_gate.human_approval(reviews, self.H)[0])
+        self.assertEqual(common.human_approvers([self.rv(), self.rv(login="bob")], self.H), ["alice", "bob"])
+
+
+class CappedApprovalOutputTest(GitRepoTestCase):
+    def test_capped_plan_carries_approvers(self):
+        self.commit({"app.py": CODE_V1}, "base")
+        self.git("checkout", "-q", "-b", "feature")
+        c1 = self.commit({"app.py": CODE_V2})
+        head = self.commit({"app.py": CODE_V3})
+        reviews = [{"user": {"login": "alice", "type": "User"}, "state": "APPROVED", "commit_id": head,
+                    "author_association": "OWNER"}]
+        out_file = self.dir / "plan.json"
+        with mock.patch.object(review_plan, "fetch_markers",
+                               return_value=[marker(c1, 3, review_plan.patch_id("main", c1))]), \
+                mock.patch.object(common, "fetch_reviews", return_value=reviews), \
+                redirect_stdout(io.StringIO()):
+            rc = review_plan.main(["--pr", "1", "--base", "main", "--repo", "o/r",
+                                   "--config", str(self.dir / "none.json"), "--output", str(out_file)])
+        self.assertEqual(rc, 0)
+        plan = json.loads(out_file.read_text(encoding="utf-8"))
+        self.assertEqual((plan["mode"], plan["approved_by"]), ("capped", ["alice"]))
 
 
 if __name__ == "__main__":

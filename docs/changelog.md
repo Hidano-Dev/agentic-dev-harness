@@ -13,6 +13,10 @@ PR 提出後に止まる原因(Codex App のレビューが五月雨式に届く
   指摘の有無にかかわらず 1 件の PR review を投稿する(`review_plan.py` / `post_review.py` / `review_status.py`、
   プロンプトとスキーマは配布物)。2 回目以降は差分のみ・`max_rounds` で打ち止め・base の取り込みだけの push は
   再レビューしない。レビュー用のスクリプトと config は PR の base から取る。要 `OPENAI_API_KEY`。
+  上限(`capped`)に達した後のヘッドは、人間が Approve するまで `codex-review` が失敗する(Approve で
+  `policy-gate-relabel.yml` が再実行。ハーネス用 App に **Actions: Read and write** が要る)。スレッドにできなかった
+  P0 / P1 があるときもチェックを失敗させる。「base の取り込みだけ」の判定は空白を無視しない指紋(変更ファイルの
+  両側の blob ID)で行う。
   **取り込み側で必要な作業: Codex GitHub App の自動レビューを無効にする**
 - **ゲート**: `templates/consumer/policy-gate.yml`(新規、`pull_request_target`)+ `policy-gate-recheck.yml` /
   `policy-gate-relabel.yml`(Approve 後の再評価。secret は `workflow_run` 側だけが使う)。

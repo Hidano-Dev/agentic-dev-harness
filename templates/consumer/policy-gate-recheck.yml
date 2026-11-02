@@ -27,4 +27,6 @@ jobs:
       - name: Signal policy-gate recheck
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: echo "PR #$PR_NUMBER のレビューが更新されました(policy-gate-relabel.yml が再評価を起こします)"
+        # 素のスカラーだと " #" 以降が YAML のコメントになるため、ブロックスカラーで書く
+        run: |
+          echo "PR #$PR_NUMBER のレビューが更新されました(policy-gate-relabel.yml が再評価を起こします)"
