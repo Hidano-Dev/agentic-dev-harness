@@ -242,6 +242,7 @@ def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
         default_branch=a.default_branch,
         team=a.linear_team.strip(),
         review_bot=a.review_bot,
+        release_branch=a.release_branch or None,
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -256,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--default-branch", default="main")
     ap.add_argument("--linear-team", required=True, help="config の linear.team")
     ap.add_argument("--review-bot", choices=["codex", "none"], default="codex")
+    ap.add_argument("--release-branch", default="",
+                    help="リリースブランチ(2 段構成。configure_repo.py で develop を作った場合は main。空なら単一ブランチ運用)")
     ap.add_argument("--result", help="結果 JSON の書き出し先")
     a = ap.parse_args(argv)
 

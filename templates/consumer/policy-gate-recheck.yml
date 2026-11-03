@@ -1,0 +1,32 @@
+# =============================================================================
+# Policy Gate Recheck(取り込み側リポジトリに置く。agentic-dev-harness が配布)
+# -----------------------------------------------------------------------------
+# policy-gate.yml は pull_request_target で動く(定義を base から取り、PR に書き換えさせない)ため、
+# レビューの提出・取り消しでは起動しない。このワークフローはレビューのイベントを受けて
+# 「完了する」だけの合図役で、実際の再評価は policy-gate-relabel.yml(workflow_run。定義は常に
+# 既定ブランチから取る)が App トークンでラベル policy-gate-recheck を付け直して起こす。
+#
+# - pull_request_review のワークフロー定義は PR 側から取られる(PR が書き換えられる)ので、
+#   ここには secret を一切渡さず、権限の要る処理もしない。書き換えられても「再評価が起きない」
+#   か「余計に再評価される」だけで、gate を通す方向には働かない(判定は base 側の policy-gate)
+# - name は policy-gate-relabel.yml の workflow_run が参照するので変えないこと
+# - 配置先: .github/workflows/policy-gate-recheck.yml(Harness Sync が更新する)
+# =============================================================================
+name: Policy Gate Recheck
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions: {}
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signal policy-gate recheck
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # 素のスカラーだと " #" 以降が YAML のコメントになるため、ブロックスカラーで書く
+        run: |
+          echo "PR #$PR_NUMBER のレビューが更新されました(policy-gate-relabel.yml が再評価を起こします)"

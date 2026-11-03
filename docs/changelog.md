@@ -3,6 +3,42 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-11-01 — 待機・判定・マージを GitHub 側へ移し、develop / main の 2 段構成にする
+
+PR 提出後に止まる原因(Codex App のレビューが五月雨式に届く、指摘ゼロのときの 👍 をワーカーが拾えない、
+並列 PR のドキュメント衝突でマージが止まる、指示文の変更のたびに人間の承認待ちになる、配布物の更新を
+リポジトリごとに手で回す)を、LLM の待機・解釈ではなくスクリプトと Actions と GitHub の auto-merge で解消する。
+
+- **レビュー**: `templates/consumer/codex-review.yml`(新規)が PR の push ごとに Codex を Actions で 1 回だけ実行し、
+  指摘の有無にかかわらず 1 件の PR review を投稿する(`review_plan.py` / `post_review.py` / `review_status.py`、
+  プロンプトとスキーマは配布物)。2 回目以降は差分のみ・`max_rounds` で打ち止め・base の取り込みだけの push は
+  再レビューしない。レビュー用のスクリプトと config は PR の base から取る。要 `OPENAI_API_KEY`。
+  上限(`capped`)に達した後のヘッドは、人間が Approve するまで `codex-review` が失敗する(Approve で
+  `policy-gate-relabel.yml` が再実行。ハーネス用 App に **Actions: Read and write** が要る)。スレッドにできなかった
+  P0 / P1 があるときもチェックを失敗させる。「base の取り込みだけ」の判定は空白を無視しない指紋(変更ファイルの
+  両側の blob ID)で行う。
+  **取り込み側で必要な作業: Codex GitHub App の自動レビューを無効にする**
+- **ゲート**: `templates/consumer/policy-gate.yml`(新規、`pull_request_target`)+ `policy-gate-recheck.yml` /
+  `policy-gate-relabel.yml`(Approve 後の再評価。secret は `workflow_run` 側だけが使う)。
+  不変条件(`.harness/invariants.json`)・コアの変更への人間の承認・配布物の直接編集の禁止・同期 PR の完全一致検証
+- **保護の段階化**: config 移行 `2026-11-01-protected-core-tiering` が `auto_merge.protected_paths` から
+  `.claude/` `CLAUDE.md` `AGENTS.md` `.agents/` を外し、`.harness/` `.claude/settings.json` 等のコアを足す
+  (独自に足したパスは残る)。指示文の変更は人間の承認なしに作業ブランチへ入る
+- **コンフリクト**: `templates/consumer/conflict-sweeper.yml`(新規)+ `resolve_conflicts.py`。文書の
+  「同じ位置への追記同士」の衝突を自動で解消し、解消できないものに `needs-conflict-resolution` を付ける
+- **2 段構成**: `templates/consumer/promote.yml`(新規)+ `release_notes.py` が develop → main の Release PR を維持する。
+  config に `github.release_branch` を追加(移行 `2026-11-01-branch-model-keys` は既存リポジトリに null を入れるだけ。
+  develop への切り替えは Rollout の `configure_settings`)
+- **配布**: `sync-manifest.json` / `scripts/sync/`(新規)。`harness-sync.yml` v2 は既定ブランチへの push・毎日・
+  手動で配布元 main の更新を検知して同期 PR を作り、自動マージを予約する(ハーネス用 GitHub App が必要)。
+  `.harness/version` に適用した配布元のコミットを記録する。初回は本リポジトリの **Harness Rollout** で配る
+- **並列**: config に `worker.max_parallel`(キーが無ければ 1)。claim に `領域:` を書き、重なる Issue を後回しにする
+- `.claude/rules/git-workflow.md` / `.claude/skills/linear-worker/SKILL.md` を上記に合わせて改定(§4 を全面改定)。
+  `review.provider` の移行 `2026-11-01-review-provider-action` で既存リポジトリも Actions レビューへ切り替わる
+- `templates/routine-prompt.md` を「SKILL.md を読んで従う」だけの薄いプロンプトに変えた。
+  **取り込み側で必要な作業: 各 Routine のプロンプトを新しい本文に差し替える**(旧本文は `@codex review` の投稿など
+  旧方式の手順を含むため。以後はスキルを改定してもプロンプトの差し替えは不要)
+
 ## 2026-10-15 — 軽微な変更はレビューなしでマージし、レビューは開発エージェントが自分で依頼する
 
 テキストだけ・コメントだけの PR まで外部レビューを待っていたため、マージまでに数十分〜数時間かかっていた。

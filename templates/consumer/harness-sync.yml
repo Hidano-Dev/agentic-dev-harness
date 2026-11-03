@@ -1,159 +1,156 @@
 # =============================================================================
-# harness アセット同期ワークフロー(取り込み側リポジトリに置く)
+# Harness Sync v2(取り込み側リポジトリに置く。agentic-dev-harness が配布)
 # -----------------------------------------------------------------------------
-# 手動実行(workflow_dispatch)で agentic-dev-harness の最新 main から
-# linear-worker と Git 運用ルール(SYNC_PATHS のパス)を取り込み直す。
-# 差分がある時だけ "chore: sync harness assets" としてコミットする。
+# 配布元(agentic-dev-harness)の main に追従し、差分があれば同期 PR を作って自動マージを予約する。
 #
-# - 同期するのは harness が所有するパス(SYNC_PATHS)だけ。ディレクトリは丸ごと harness
-#   管理なので、配布元で削除されたファイルは取り込み側からも削除して揃える。
-#   それ以外(.claude/settings.json、自作 skill、.kiro/specs 等)には触れない
-# - SDD ワークフロー(kiro commands / dev-orchestrator / .kiro/settings / AGENTS.md)は
-#   本ワークフローの対象外。unity-sdd-kit(https://github.com/Hidano-Dev/unity-sdd-kit)
-#   の同期ワークフローで取り込む
-# - ルート CLAUDE.md は、Git 運用ルールの import 行(CLAUDE_MD_IMPORT)が無い場合だけ
-#   末尾に追記する(それ以外の内容には触れない)
-# - .kiro/orchestration/config.json はコピーしないが、配布元が定義した移行
-#   (.claude/skills/linear-worker/scripts/migrate_config.py。対象は auto_merge のみ)を
-#   1 度ずつ適用する。適用済みの移行は config の applied_migrations に記録され、
-#   その後に人間が値を戻しても再適用しない
-# - このワークフロー自体と docs-policy.yml(.github/workflows/)は GITHUB_TOKEN では更新できない
-#   ため同期しない。無い・配布版と異なる場合は警告するので、templates/consumer/ の配布版で差し替える
-# - 取り込み元が public リポジトリなのでトークン不要。private にする場合は
-#   checkout 用の PAT を secret に置き、clone URL に埋め込む
+# - 既定ブランチへの push・毎日 1 回・手動実行で動く。配布元 main の sha が `.harness/version` と
+#   同じなら即終了(安価)。同じ sha の同期 PR が開いていても終了
+# - 適用の本体は配布元の scripts/sync/apply_sync.py(clone した配布元から実行する):
+#   配布物(sync-manifest.json の owned。ディレクトリは丸ごと置換)・配布ワークフロー
+#   (このファイル・docs-policy.yml・policy-gate.yml 等)のコピー、ルート CLAUDE.md の
+#   import 行の保証、.kiro/orchestration/config.json の検査と移行(migrate_config.py)、
+#   `.harness/version` の記録。同期先のシンボリックリンク・submodule・.gitignore による除外は
+#   検出して中止する
+# - 同期 PR(ブランチ chore/harness-sync-<sha7>、ラベル harness-sync)は policy-gate が
+#   「配布元の指定コミットの適用結果と完全一致」を検証するので、人間の承認なしで自動マージされる。
+#   古い同期 PR はクローズしてブランチを削除する
+# - GitHub App のトークンが必須(GITHUB_TOKEN ではワークフローを更新できず、push で CI も起動しない)。
+#   組織 secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無ければ warning を出して終了する
+# - 配布物(.claude/skills/linear-worker 等)はこのリポジトリで直接編集しない(policy-gate が失敗させる)
+# - 導入 PR(policy-gate.yml 等を初めて足す同期 PR)は人間がマージする。pull_request_target の
+#   policy-gate は base に定義があって初めて動くので、導入 PR 自身には policy-gate が付かない。
+#   configure_repo.py もワークフローが develop に無いチェックは必須にしない
+# - 既定ブランチへの push のたびに configure_repo.py --protection-only で、ワークフローが揃った
+#   ハーネスの必須チェック(policy-gate / codex-review / aggregate-docs)を develop の保護に足す
+#   (導入 PR のマージ後に保護が完成する。App に Administration 権限が無ければ warning で続行)
+# - 取り込み元が public リポジトリである前提(clone にトークンを使わない)
 #
 # 配置先: .github/workflows/harness-sync.yml
 # =============================================================================
 name: Harness Sync
 
 on:
+  push:
+  schedule:
+    - cron: '17 20 * * *'   # 毎日 05:17 JST
   workflow_dispatch:
-  # 定期的に追従したい場合は以下を有効化
-  # schedule:
-  #   - cron: '0 21 * * 0'   # 毎週月曜 06:00 JST
+
+concurrency:
+  group: harness-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
   # 配布元(agentic-dev-harness)
   HARNESS_REPO: Hidano-Dev/agentic-dev-harness
   HARNESS_REF: main
-  # 取り込むパス(空白区切り。harness が所有するパスのみ)
-  SYNC_PATHS: ".claude/skills/linear-worker .claude/rules/git-workflow.md"
-  # ルート CLAUDE.md に必要な import 行
-  CLAUDE_MD_IMPORT: "@.claude/rules/git-workflow.md"
 
 jobs:
   sync:
+    # push は既定ブランチへのものだけ(作業ブランチへの push では動かない)
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Preflight
+        id: pre
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ "$GITHUB_REPOSITORY" = "$HARNESS_REPO" ]; then
+            echo "::notice::配布元自身では同期しません"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため同期をスキップしました(GITHUB_TOKEN ではワークフローの更新も CI の起動もできない)"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          sha=$(git ls-remote "https://github.com/${HARNESS_REPO}.git" "refs/heads/${HARNESS_REF}" | cut -f1)
+          if [ -z "$sha" ]; then
+            echo "::error::${HARNESS_REPO} の ${HARNESS_REF} を取得できません"; exit 1
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App token
+        id: app
+        if: steps.pre.outputs.run == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.pre.outputs.name }}
+
+      # 導入 PR のマージ等で policy-gate.yml / codex-review.yml / docs-policy.yml が既定ブランチに
+      # 揃ったら、その必須チェックを develop の保護に足す(冪等。足りないものだけ追加)
+      - name: Reconcile branch protection
+        if: steps.pre.outputs.run == 'true' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          c="$RUNNER_TEMP/harness-configure"
+          if ! git clone --quiet --depth 1 --branch "$HARNESS_REF" "https://github.com/${HARNESS_REPO}.git" "$c"; then
+            echo "::warning::配布元を clone できないため branch protection の補完をスキップしました"; exit 0
+          fi
+          python3 -I "$c/scripts/sync/configure_repo.py" --repo "$GITHUB_REPOSITORY" --protection-only --apply \
+            || echo "::warning::branch protection の補完に失敗しました(App に Administration: write が無い可能性。同期は続行します)"
+
+      - name: Resolve default branch
+        id: repo
+        if: steps.pre.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ steps.pre.outputs.sha }}
+        run: |
+          branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
+          # 同じ sha の同期 PR が開いていれば何もしない
+          open=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --label harness-sync --limit 100 \
+            --json headRefName --jq "[.[] | select(.headRefName == \"chore/harness-sync-${SHA:0:7}\")] | length")
+          if [ "$open" != "0" ]; then
+            echo "::notice::${SHA:0:7} の同期 PR が既に開いています"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.repo.outputs.run == 'true'
+        with:
+          ref: ${{ steps.repo.outputs.default_branch }}
+          token: ${{ steps.app.outputs.token }}
 
-      # 同期先(とその途中のディレクトリ・配下)にシンボリックリンクがあると cp はリンク先へ
-      # 書き込み、後続の git add -A / push が無関係なファイルの変更を既定ブランチへ直接反映して
-      # しまう。同期先が submodule(gitlink, mode 160000)だと、書き込んでも superproject の
-      # git add に乗らず、更新されないまま正常終了に見える。どちらもコピー前に検査して失敗させる
-      - name: Refuse symlinks and submodules under sync targets
+      - name: Check current version
+        id: cur
+        if: steps.repo.outputs.run == 'true'
+        env:
+          SHA: ${{ steps.pre.outputs.sha }}
         run: |
-          bad=""
-          for p in $SYNC_PATHS CLAUDE.md; do
-            # 途中のディレクトリ(.claude、.claude/skills 等)がリンクでも submodule でもないこと
-            # (祖先が gitlink だと、配下のパスは git ls-files に現れないため個別に見る)
-            cur=""
-            IFS=/ read -ra parts <<< "$p"
-            for part in "${parts[@]}"; do
-              cur="${cur:+$cur/}$part"
-              if [ -L "$cur" ]; then bad="$bad$cur"$'\n'; break; fi
-              if git ls-files --stage -- "$cur" | awk -v p="$cur" '$1 == "160000" && $4 == p { found = 1 } END { exit !found }'; then
-                bad="$bad$cur (submodule)"$'\n'; break
-              fi
-            done
-            if [ -d "$p" ] && [ ! -L "$p" ]; then
-              found=$(find "$p" -type l -print)
-              if [ -n "$found" ]; then bad="$bad$found"$'\n'; fi
-            fi
-          done
-          gitlinks=$(git ls-files --stage -- $SYNC_PATHS | awk '$1 == "160000" { print $4 " (submodule)" }')
-          if [ -n "$gitlinks" ]; then bad="$bad$gitlinks"$'\n'; fi
-          if [ -n "$bad" ]; then
-            echo "::error::同期先にシンボリックリンクまたは submodule があるため同期を中止しました(通常のファイル・ディレクトリにしてから再実行してください): $(echo "$bad" | tr '\n' ' ')"
-            exit 1
+          cur=$(python3 -c "import json,sys; print(json.load(open('.harness/version')).get('sha',''))" 2>/dev/null || true)
+          if [ "$cur" = "$SHA" ]; then
+            echo "::notice::${HARNESS_REPO}@${SHA:0:7} は適用済みです"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
-      - name: Import latest harness assets
+      - name: Apply harness and open sync PR
+        if: steps.cur.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SHA: ${{ steps.pre.outputs.sha }}
+          DEFAULT_BRANCH: ${{ steps.repo.outputs.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          git clone --depth 1 --branch "$HARNESS_REF" --single-branch "https://github.com/${HARNESS_REPO}.git" /tmp/harness
-          for p in $SYNC_PATHS; do
-            src="/tmp/harness/$p"
-            if [ ! -e "$src" ]; then
-              echo "::warning::$p は配布元に存在しないためスキップしました"
-              continue
-            fi
-            mkdir -p "$(dirname "$p")"
-            if [ -d "$src" ]; then
-              # ディレクトリは harness 管理なので、配布元に無いファイルを残さないよう丸ごと置き換える
-              rm -rf "$p"
-              cp -R "$src" "$p"
-            else
-              cp -f "$src" "$p"
-            fi
-          done
-          for name in harness-sync docs-policy; do
-            wf=.github/workflows/$name.yml
-            tpl=/tmp/harness/templates/consumer/$name.yml
-            [ -f "$tpl" ] || continue
-            if [ ! -f "$wf" ]; then
-              # harness-sync.yml は改名して置かれていることがある。docs-policy.yml は Linear 連携
-              # (config.json)がある場合だけ必要
-              [ "$name" = docs-policy ] && [ -f .kiro/orchestration/config.json ] || continue
-              echo "::warning::$wf がありません。配布版(${HARNESS_REPO} の templates/consumer/$name.yml)を置いてください"
-            elif ! cmp -s "$tpl" "$wf"; then
-              echo "::warning::$wf が配布版(${HARNESS_REPO} の templates/consumer/$name.yml)と異なります。独自の変更が無ければ配布版に差し替えてください"
-            fi
-          done
-          rm -rf /tmp/harness
-
-      # Git 運用ルール(linear-worker の入口を含む)は CLAUDE.md の import 行から読み込まれる。
-      # 行が無ければ末尾に追記する(既存の内容には触れない)
-      - name: Ensure CLAUDE.md import
-        run: |
-          if [ -f CLAUDE.md ] && grep -qxF "$CLAUDE_MD_IMPORT" CLAUDE.md; then
-            exit 0
-          fi
-          if [ -s CLAUDE.md ] && [ -n "$(tail -c1 CLAUDE.md)" ]; then echo >> CLAUDE.md; fi
-          if [ -s CLAUDE.md ]; then echo >> CLAUDE.md; fi
-          echo "$CLAUDE_MD_IMPORT" >> CLAUDE.md
-          echo "::notice::CLAUDE.md に $CLAUDE_MD_IMPORT を追記しました"
-
-      # config.json は同期対象外だが、雛形のプレースホルダが残ったまま・JSON として壊れたまま
-      # だと linear-worker が誤動作するので、同期のついでに検査して警告する
-      - name: Check orchestration config
-        run: |
-          f=.kiro/orchestration/config.json
-          if [ ! -f "$f" ]; then
-            echo "::notice::$f が無いため linear-worker は起動しません(Git 運用ルールのみ)"
-          else
-            python3 -c "import json,sys; json.load(open('$f'))" \
-              || { echo "::error::$f が JSON として不正です"; exit 1; }
-            if grep -qE '"<[^"]*>"' "$f"; then
-              echo "::warning::$f に雛形のプレースホルダ(<...>)が残っています"
-            fi
-          fi
-
-      # 雛形の既定値を変えても既存の config.json には届かないので、配布元が定義した
-      # auto_merge の移行を未適用のものだけ適用する(適用内容は notice に出す)
-      - name: Apply orchestration config migrations
-        run: |
-          m=.claude/skills/linear-worker/scripts/migrate_config.py
-          if [ -f .kiro/orchestration/config.json ] && [ -f "$m" ]; then
-            python3 "$m" .kiro/orchestration/config.json
-          fi
-
-      - name: Commit if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && exit 0
-          git commit -m "chore: sync harness assets"
-          git push
+          h="$RUNNER_TEMP/harness"
+          git clone --quiet --no-checkout "https://github.com/${HARNESS_REPO}.git" "$h"
+          git -C "$h" -c advice.detachedHead=false checkout --quiet --detach "$SHA"
+          python3 -I "$h/scripts/sync/apply_sync.py" --harness "$h" --target . --sha "$SHA" \
+            --harness-repo "$HARNESS_REPO" --ref "$HARNESS_REF"
+          python3 -I "$h/scripts/sync/publish_sync_pr.py" --target . --repo "$GITHUB_REPOSITORY" \
+            --base "$DEFAULT_BRANCH" --sha "$SHA" --harness-repo "$HARNESS_REPO" --run-url "$RUN_URL"

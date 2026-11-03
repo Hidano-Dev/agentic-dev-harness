@@ -1,0 +1,29 @@
+# 配布元(本リポジトリ)のスクリプトのテスト。configure_repo.py は pull_request で走るこのジョブ(`tests`)を
+# CI として必須チェックに推定する
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run unit tests
+        run: |
+          # test_workflow_scripts がワークフローを YAML として読むのに使う(無いとスキップされる)
+          python -m pip install --quiet pyyaml
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.invalid"
+          python -m unittest discover -s tests -v

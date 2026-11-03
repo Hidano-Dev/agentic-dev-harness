@@ -14,9 +14,32 @@
 - Linear と GitHub 組織の連携が有効(ブランチ名の Issue ID から PR を自動で紐付け、
   ブランチ作成で In Progress、マージで Done へ遷移させる機能)
 - claude.ai の MCP コネクタに Linear が接続済み(Routine から使う)
-- 外部レビューボットを使う場合は、対象リポジトリに GitHub App をインストール済み
-  (例: Codex。`@codex review` のコメントでレビューを起動できること。ワーカーはレビューが必要な PR に
-  このコメントで自分から依頼するので、ボット側の自動レビュー(push・PR 作成時の自動起動)は無効にしてよい)
+- **Codex のレビューは Actions で動かす**(`codex-review` ワークフロー。config `review.provider: action`)。
+  Codex GitHub App のレビューは使わない — App 側の自動レビューは**無効にする**(有効のままだと 1 ヘッドに
+  2 本のレビューが付く)。App を使い続けたいリポジトリだけ config を `review.provider: app` にする
+- **ハーネス用の GitHub App**(組織に 1 つ。同期 PR の作成・ワークフロー更新・コンフリクト解消の push・
+  ブランチ保護の設定に使う。GITHUB_TOKEN では push で CI が起動せず、`.github/workflows/` も更新できないため):
+
+  1. Organization settings → Developer settings → GitHub Apps → New GitHub App。名前は任意
+     (例: `hidano-harness-bot`)、Homepage URL は本リポジトリ、Webhook は Active を外す
+  2. Repository permissions:
+
+     | 権限 | レベル | 用途 |
+     |---|---|---|
+     | Contents | Read and write | 同期 PR・コンフリクト解消・back-merge の push、develop の作成 |
+     | Pull requests | Read and write | 同期 PR・Release PR の作成と更新、auto-merge の予約 |
+     | Workflows | Read and write | `.github/workflows/` の配布物の更新 |
+     | Issues | Read and write | ラベルの作成・付け外し、コメント |
+     | Administration | Read and write | 既定ブランチの変更・auto-merge の有効化・branch protection(`configure_repo.py`) |
+     | Actions | Read and write | 必須チェックにする CI の推定、回数上限後に人間が Approve した PR の `codex-review` の再実行 |
+     | Checks | Read | 必須チェックにする CI の推定 |
+     | Metadata | Read | (必須) |
+
+  3. 作成後に Private key を生成し、App を **All repositories**(または対象リポジトリすべて)にインストールする
+  4. **組織の Actions secret**(Organization settings → Secrets and variables → Actions。Repository access は
+     All repositories)に `HARNESS_APP_ID`(App ID)と `HARNESS_APP_PRIVATE_KEY`(秘密鍵の PEM 全文)を置く
+- **組織の Actions secret `OPENAI_API_KEY`**(`codex-review` 用。従量課金)。無いリポジトリではレビューが
+  「レビュー不可(fail-open)」になり、他のゲートだけでマージへ進む
 - **本リポジトリの Actions secret**(Settings → Secrets and variables → Actions):
 
   | secret | 用途 | 作り方 |
@@ -39,6 +62,7 @@
 | `target_repo` | `owner/name` |
 | `linear_team` | ワーカーが拾うキューのチーム名。空欄なら variable `LINEAR_DEFAULT_TEAM`(どちらも無ければ失敗) |
 | `review_bot` | `codex` または `none`。config の `review.bot` を決めるだけで、GitHub 側のレビュー設定(App のインストール・自動レビュー)は変えない |
+| `configure_settings` | 既定 on。`develop` を作って既定ブランチにし(元の既定ブランチ `main` はリリースブランチになる)、auto-merge を有効化し、develop / main の branch protection を設定する(`scripts/sync/configure_repo.py`。ハーネス用 GitHub App が必要)。単一ブランチ運用のままにしたい場合だけ off |
 | `direct_push` | 既定は PR 作成。新規リポジトリで即反映したいときだけ on。実行ごとの指定で保存されない(次回は既定に戻る) |
 
 フォームに無い項目は規約で決まる。変えたい場合は生成後の `config.json` を編集する:
@@ -77,10 +101,37 @@ PR の `config.json` を確認してマージする。規約から変えたい�
 
 ## 3. GitHub 側を確認する(手動)
 
-- CI(fast checks 相当)が PR で走ること。CI が無い場合、二次ゲート手順 4 は「CI なし」として記録される
-- ブランチ保護で「未解決のレビュースレッドがあるとマージ不可」を有効にしておくと、
-  ワーカーの手順 6(スレッドの明示 resolve)と整合する(private リポジトリでは有料プランが必要)
-- 外部レビューボットを使う場合は PR に対して動くことを 1 回確認する
+- 導入 PR をマージすると、`harness-sync` が配布物一式(`codex-review` / `policy-gate` / `conflict-sweeper` /
+  `promote` 等のワークフローを含む)の**同期 PR を自動で作る**。初回は `policy-gate` がまだ base に無いので
+  人間がマージする(以後の同期 PR は配布元 main との完全一致が検証できれば自動でマージされる)
+- CI(fast checks 相当)が PR で走ること。`configure_settings` を on にした場合、`configure_repo.py` は
+  develop の必須チェックを、`pull_request` で走る既存 CI から推定して設定する。`codex-review` / `policy-gate` /
+  `aggregate-docs` は、そのワークフローが develop に入った後(初回の同期 PR のマージ後)に `harness-sync` が
+  `configure_repo.py --protection-only` で必須チェックへ足す(`pull_request_target` のワークフローは base に
+  入るまで動かないため、先に必須にすると PR が永遠に待ち状態になる)。導入より後に CI を足したら、Rollout(下記)を `configure_settings` 付きで再実行する
+- 1 本目の PR で `codex-review` が「指摘なし」または指摘付きの review を 1 件投稿することを確認する
+- **Linear の GitHub 連携**(2 段構成のとき): Linear の Settings → Integrations → GitHub の
+  ブランチごとのワークフロー設定で、`develop` へのマージを Done(または独自の状態)に、`main` へのマージを
+  リリース済みにする。設定しない場合、Issue は develop へのマージ(`Fixes`)で Done になる
+
+## 配布物の更新(自動)
+
+本リポジトリの `main` が更新されると、各取り込み側リポジトリの `harness-sync` が次のいずれかで検知して
+同期 PR(ラベル `harness-sync`)を作り、自動マージを予約する。リポジトリを 1 つずつ回る作業は不要。
+
+- 取り込み側の既定ブランチへの push(作業が進んでいるリポジトリはすぐ追従する)
+- 毎日 1 回の定期実行(止まっているリポジトリも 1 日以内に追従する)
+- Actions 画面からの手動実行
+
+同期 PR は配布物とコアに触れるが、`policy-gate` が「配布元 main の指定コミットを適用した結果と完全一致」を
+機械的に確かめられれば人間の承認なしにマージされる(配布元の Release PR で人間がレビュー済みのため)。
+config の移行(`migrate_config.py`)による変更もこの検証に含まれる。
+
+**v2 への初回移行**(旧 `harness-sync.yml` は手動実行専用で、GITHUB_TOKEN ではワークフローを更新できない):
+本リポジトリの Actions → **Harness Rollout** を `main` から実行する。台帳(`registry/repos.yaml`)の
+`sync: workflow` かつ status が active / pilot のリポジトリに同期 PR を作る。`configure_settings` を on にすると
+develop の作成・既定ブランチの変更・branch protection も行い、config のブランチ設定(`develop` / `main`)を
+書き換える(config はコアなので、その同期 PR は人間の Approve が要る。1 リポジトリにつき 1 回だけ)。
 
 ## 4. Routine(定期実行)を作り、台帳に ID を記入する
 
@@ -116,13 +167,26 @@ PR の `config.json` を確認してマージする。規約から変えたい�
 
 ## 運用中の注意
 
-- 配布物(`.claude/skills/linear-worker/` `.claude/rules/git-workflow.md`)を実行リポジトリ側で
-  直接編集しない。直した場合は本リポジトリへ戻す。最新化は実行リポジトリの Actions で `Harness Sync` を実行する
-- Routine が同時に 2 つ以上動く構成にしない(並行度 1 が前提。複数リポジトリはそれぞれ
-  別 Routine でよいが、同一リポジトリに 2 本立てない)
+- 配布物(`sync-manifest.json` の `owned`。`.claude/skills/linear-worker/` `.claude/rules/git-workflow.md`
+  `.harness/invariants.json`)を実行リポジトリ側で直接編集しない(`policy-gate` が失敗させる)。直す場合は
+  本リポジトリを直す。最新化は自動(上記「配布物の更新」)
+- 並列度は config の `worker.max_parallel`(雛形 2)。同一リポジトリに Routine を複数立てても、ワーカーは
+  claim の数と `領域:` の重なりで調整する。手動のクラウドセッション・worktree での並列作業と併用してよい
+- **Release PR**(develop → main)は `promote` が常に 1 本開いておく。本文の先頭にコア・配布物・指示文の
+  変更が並ぶので、そこを中心に見て人間がマージする(merge commit。squash しない)
+- 既知の制約: `codex-review` と `policy-gate` は `pull_request_target` で base の定義を使い、App の秘密鍵を使う
+  再評価は `policy-gate-relabel.yml`(`workflow_run`。既定ブランチの定義)で行うので、PR がそれらを書き換えて secret を読んだりゲートを
+  外したりはできない。ただし PR が**新しく足した**ワークフローは PR の定義で動くため、エージェントが**意図的に**
+  同名のチェック(`policy-gate` 等)を出して必須チェックを偽装することまでは仕組みで防げない。`.github/` の変更は `policy-gate` が人間の Approve を求め、Release PR の
+  先頭にも強調されるので、そこで確認する。より強くしたい場合は CODEOWNERS で `.github/` にコードオーナーの
+  レビューを必須にする(配布物のワークフローを更新する同期 PR も人間の承認待ちになる)
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。
   ラベルは再開したワーカーが外すので手で外さなくてよい(外すと通常の選定対象に戻る)
-- `.claude/` `.github/` `.kiro/settings/` `.kiro/orchestration/` `.agents/` `.codex/` とルートの `CLAUDE.md` `AGENTS.md` を変える PR は自動マージされない。人間がマージする
+- コア(config の `auto_merge.protected_paths`。既定 `.github/` `.harness/` `.kiro/orchestration/` `.kiro/settings/`
+  `.claude/settings.json` `.codex/`)を変える PR は、人間が Approve するまで `policy-gate` が通さない。
+  `CLAUDE.md` `AGENTS.md` などの指示文は、`codex-review` と不変条件(`.harness/invariants.json`)を通れば
+  develop へ自動マージされる(2026-11-01 の段階化。既存リポジトリの config も同期時の移行で切り替わる)。
+  人間は Release PR でまとめて確認する
 
 ## 手動で行う場合(ワークフローが使えないとき)
 

@@ -25,6 +25,9 @@
 #                            Workflows: Read/Write, Metadata: Read)。
 #                           Workflows 権限は .github/workflows/ 配下を push するのに必要
 #   LINEAR_API_KEY        … 任意。Linear の個人 API キー(ラベル・プロジェクト作成、存在確認に使う)
+#   HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY … configure_settings 用の GitHub App(対象にインストール。
+#                           Administration RW / Contents RW / Actions R / Checks R / Metadata R)。
+#                           対象の検証後に、対象リポジトリだけに絞ったトークンで configure_repo.py を実行する
 # 任意の variable(同じ画面の Variables タブ):
 #   LINEAR_DEFAULT_TEAM   … linear_team を空欄にしたときに使うチーム名。本リポジトリを clone して
 #                           使う人が自分のチーム名を置く(ワークフロー本文に固定値を書かない)
@@ -52,6 +55,11 @@ on:
         type: choice
         options: [codex, none]
         default: codex
+      configure_settings:
+        description: 'develop を作って既定ブランチにし、auto-merge と branch protection を設定する(2 段構成。secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が必要)'
+        required: false
+        type: boolean
+        default: true
       direct_push:
         description: 'この実行の導入コミットを PR にせずデフォルトブランチへ直接 push する(実行ごとの指定。保存されない)'
         required: false
@@ -136,8 +144,10 @@ jobs:
             echo "::error::'$repo' にはコミットがありません(既定ブランチ未作成)。README 等で初期コミットを作ってから再実行してください"; exit 1
           fi
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "owner=${repo%%/*}" >> "$GITHUB_OUTPUT"
           echo "name=${repo##*/}" >> "$GITHUB_OUTPUT"
-          echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
+          # configure_repo より前の既定ブランチ(develop へ切り替えたらリリースブランチになる)
+          echo "prior_default_branch=$branch" >> "$GITHUB_OUTPUT"
           echo "対象: $repo(default: $branch)"
 
       # 対象リポジトリを変更する前に、台帳のエントリ名(リポジトリ名)が別の owner/name に
@@ -153,11 +163,65 @@ jobs:
           git show "origin/$REGISTRY_BRANCH:registry/repos.yaml" > /tmp/repos-default.yaml
           python3 scripts/onboard/registry.py --file /tmp/repos-default.yaml check --name "$NAME" --github "$REPO"
 
+      # 2 段構成(develop = 作業ブランチ / 変更前の既定ブランチ = リリース)。対象の検証が済んでから行い、
+      # 以降の導入 PR は develop へ出す。App トークンは対象リポジトリだけに絞る。
+      # App の secret が無ければ warning を出して 2 段構成の設定を飛ばす(単一ブランチのまま導入を続ける)
+      - name: Check App secrets for configure_settings
+        id: appcheck
+        if: inputs.configure_settings
+        env:
+          APP_ID: ${{ secrets.HARNESS_APP_ID }}
+          APP_KEY: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::warning::secret HARNESS_APP_ID / HARNESS_APP_PRIVATE_KEY が無いため develop の作成・既定ブランチの変更・branch protection をスキップします(単一ブランチのまま導入を続けます。後で Harness Rollout の configure_settings で設定できます)"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App token
+        id: app
+        if: steps.appcheck.outputs.ok == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.HARNESS_APP_ID }}
+          private-key: ${{ secrets.HARNESS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+
+      - name: Configure repository (develop, auto-merge, branch protection)
+        if: steps.appcheck.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ steps.target.outputs.repo }}
+          PRIOR: ${{ steps.target.outputs.prior_default_branch }}
+        run: |
+          args=()
+          if [ "$PRIOR" != "develop" ]; then args=(--release-branch "$PRIOR"); fi
+          python3 -I scripts/sync/configure_repo.py --repo "$REPO" --create-develop --apply "${args[@]}"
+
+      # 以降のステップはすべてこの実効の既定ブランチを使う。リリースブランチは、この実行で
+      # develop へ切り替えたときだけ(切り替え前の既定ブランチ)config に書く
+      - name: Resolve effective default branch
+        id: branch
+        env:
+          GH_TOKEN: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
+          REPO: ${{ steps.target.outputs.repo }}
+          PRIOR: ${{ steps.target.outputs.prior_default_branch }}
+        run: |
+          branch=$(gh api "repos/$REPO" --jq .default_branch)
+          echo "default_branch=$branch" >> "$GITHUB_OUTPUT"
+          if [ "$PRIOR" != "develop" ] && [ "$branch" = "develop" ]; then
+            echo "release_branch=$PRIOR" >> "$GITHUB_OUTPUT"
+          fi
+          echo "既定ブランチ: $branch(変更前: $PRIOR)"
+
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.target.outputs.repo }}
-          ref: ${{ steps.target.outputs.default_branch }}
+          ref: ${{ steps.branch.outputs.default_branch }}
           token: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
           path: target
 
@@ -167,7 +231,8 @@ jobs:
         id: bootstrap
         env:
           REPO: ${{ steps.target.outputs.repo }}
-          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.branch.outputs.default_branch }}
+          RELEASE_BRANCH: ${{ steps.branch.outputs.release_branch }}
         run: |
           # 書き込み先が submodule(gitlink, mode 160000)だと、コピーしても superproject の
           # git add には乗らず、配布物が欠けたまま成功に見えるので先に拒否する
@@ -182,6 +247,7 @@ jobs:
             --repo "$REPO" \
             --default-branch "$DEFAULT_BRANCH" \
             --linear-team "$LINEAR_TEAM" --review-bot "$REVIEW_BOT" \
+            --release-branch "$RELEASE_BRANCH" \
             --result /tmp/bootstrap.json
           echo "sync_mode=$(jq -r .sync_mode /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
           echo "config=$(jq -r .config /tmp/bootstrap.json)" >> "$GITHUB_OUTPUT"
@@ -229,7 +295,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HARNESS_ONBOARD_TOKEN }}
           REPO: ${{ steps.target.outputs.repo }}
-          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.branch.outputs.default_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_NUMBER: ${{ github.run_number }}
           DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/onboarding.md
@@ -286,7 +352,7 @@ jobs:
             echo
             echo "- 配布物の同期: $(jq -r '.assets_synced | join(", ")' /tmp/bootstrap.json)"
             case "$(jq -r .sync_workflow /tmp/bootstrap.json)" in
-              written)  echo "- \`.github/workflows/harness-sync.yml\` を配置(Actions から手動実行で最新化)" ;;
+              written)  echo "- \`.github/workflows/harness-sync.yml\` を配置(既定ブランチへの push・毎日の定期実行で配布元の更新を検知し、同期 PR を自動で作る)" ;;
               updated)  echo "- 既存の \`harness-sync.yml\`(旧版。SDD 一式も同期していた)を配布版に差し替え" ;;
               *)        echo "- 同期ワークフローは既存の \`harness-sync.yml\` を使用(配布版と同一)" ;;
             esac
@@ -376,7 +442,7 @@ jobs:
       - name: Write summary (remaining manual steps + Routine sheet)
         env:
           REPO: ${{ steps.target.outputs.repo }}
-          DEFAULT_BRANCH: ${{ steps.target.outputs.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.branch.outputs.default_branch }}
           PR_URL: ${{ steps.publish.outputs.pr_url }}
           PUSHED_TO: ${{ steps.publish.outputs.pushed_to }}
           LINEAR_NOTE: ${{ steps.linear.outputs.note || steps.linear_skipped.outputs.note }}

@@ -52,6 +52,10 @@ def load_policy(config: Path) -> dict | None:
         "paths": paths,
         "release_branch_prefix": docs.get("release_branch_prefix") or DEFAULT_RELEASE_BRANCH_PREFIX,
         "release_label": docs.get("release_label") or DEFAULT_RELEASE_LABEL,
+        # 2 段構成の Release PR(作業ブランチ → リリースブランチ)は、作業ブランチに入った変更を
+        # まとめて運ぶだけなので、集約型ドキュメントの変更を含んでいてよい
+        "work_branch": (cfg.get("github") or {}).get("default_branch"),
+        "release_branch": (cfg.get("github") or {}).get("release_branch"),
     }
 
 
@@ -76,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", required=True, help="比較元(PR のベース SHA、または origin/<default_branch>)")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--head-ref", default="", help="PR のヘッドブランチ名")
+    ap.add_argument("--base-ref", default="", help="PR のベースブランチ名(Release PR の判定に使う)")
     ap.add_argument("--labels-json", default="[]", help="PR のラベル名の JSON 配列")
     a = ap.parse_args(argv)
 
@@ -94,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     labels = json.loads(a.labels_json or "[]")
     if a.head_ref.startswith(policy["release_branch_prefix"]) or policy["release_label"] in labels:
         print("::notice::リリース用 PR のため、集約型ドキュメントの変更を許可")
+        return 0
+    if (policy["release_branch"] and a.base_ref == policy["release_branch"]
+            and a.head_ref == policy["work_branch"]):
+        print("::notice::Release PR(作業ブランチ → リリースブランチ)のため、集約型ドキュメントの変更を許可")
         return 0
 
     try:

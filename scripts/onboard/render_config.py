@@ -33,6 +33,7 @@ def render(
     default_branch: str,
     team: str,
     review_bot: str,
+    release_branch: str | None = None,
 ) -> dict:
     cfg = json.loads(json.dumps(template))  # deep copy(キー順は雛形どおり)
     cfg["$comment"] = (
@@ -44,8 +45,14 @@ def render(
     cfg["linear"]["project"] = project_name(repo)
     cfg["github"]["repo"] = repo
     cfg["github"]["default_branch"] = default_branch
+    # 2 段構成(develop 既定 + main リリース)は configure_repo.py が develop を作ってから有効になる。
+    # 作業ブランチとリリースブランチが同じなら単一ブランチ運用(release_branch = null)
+    cfg["github"]["release_branch"] = (
+        release_branch if release_branch and release_branch != default_branch else None
+    )
     if review_bot == "none":
         cfg["review"]["bot"] = None
+        cfg["review"]["provider"] = None
     elif review_bot != "codex":
         raise ValueError(f"unknown review_bot: {review_bot}")
     return cfg
@@ -58,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--default-branch", default="main")
     ap.add_argument("--team", required=True)
     ap.add_argument("--review-bot", choices=["codex", "none"], default="codex")
+    ap.add_argument("--release-branch", default="", help="リリースブランチ(空なら単一ブランチ運用)")
     ap.add_argument("--out", help="出力先(省略時は stdout)")
     a = ap.parse_args(argv)
 
@@ -68,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         default_branch=a.default_branch,
         team=a.team,
         review_bot=a.review_bot,
+        release_branch=a.release_branch or None,
     )
     text = json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"
     if a.out:
