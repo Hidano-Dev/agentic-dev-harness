@@ -103,7 +103,7 @@ Hub ログインで有効化した Personal ライセンス(`~/.config/unity3d/U
 そこで Hub を Xvfb 上の user systemd サービス `unityhub-keepalive` として常駐させる。
 
 ```bash
-scp scripts/unity-runner/install-hub-keepalive.sh scripts/unity-runner/hub-login.sh unity-ci:~/ci-setup/
+scp scripts/unity-runner/install-hub-keepalive.sh scripts/unity-runner/hub-vnc.sh unity-ci:~/ci-setup/
 ssh unity-ci 'bash ~/ci-setup/install-hub-keepalive.sh'
 ```
 
@@ -113,9 +113,17 @@ ssh unity-ci 'bash ~/ci-setup/install-hub-keepalive.sh'
   既定にし(`~/.local/share/keyrings/default` = `ci`)、サービスの起動前に毎回 `Unlock` する。`login` キーリングには触らない
 - 代償: Unity アカウントのログイン情報は暗号化されずに `~/.local/share/keyrings/ci.keyring` に置かれ、
   同じユーザーで動く CI ジョブからも読める。fork からの PR でセルフホストのジョブを起動しない設定(§7)が前提
-- **ログイン(初回と、ログインが切れたとき)は人の作業**: RDP で入り、端末で `~/ci-setup/hub-login.sh` を実行する。
-  常駐を止めて画面に Hub を出すので、Sign in でログインし、Preferences > Licenses でライセンスが有効なのを確かめて
-  Hub を**終了**する(ウィンドウを閉じるだけだとトレイに残る)。終了すると常駐に戻る
+- デスクトップ(RDP)にログインすると、そのセッションの `WAYLAND_DISPLAY` や AT-SPI のバスが user systemd に
+  取り込まれ、常駐の Hub が再起動時にそちらへつながってセッションと一緒に落ちる。サービスでは
+  `UnsetEnvironment=` と `--ozone-platform=x11` で Xvfb だけを使う
+- **ログイン(初回と、ログインが切れたとき)は人の作業**: 常駐 Hub の画面を VNC で開いてログインする。
+  RDP のデスクトップは使わない(Ubuntu 24.04 の GNOME Shell 46.0-0ubuntu6~24.04.17 が RDP セッションで
+  Hub / Chrome を開くと mutter の Wayland 処理で SEGV し、セッションごと消える。2026-11-24 に 8 分で 4 回)。
+  1. 初回だけ: サーバーで `sudo apt install x11vnc`、Windows に VNC ビューア(TigerVNC など)
+  2. Windows から `ssh -L 5901:localhost:5900 unity-ci '~/ci-setup/hub-vnc.sh'`(x11vnc は 127.0.0.1 だけで待ち受ける)
+  3. VNC ビューアで `localhost:5901` に接続し、Hub の Sign in でログインする(ブラウザも同じ画面に開く)。
+     Preferences > Licenses でライセンスが有効なのを確かめる。Hub は終了しない(常駐のまま)
+  4. VNC を切ると x11vnc も終わる
 - 確認: `ssh unity-ci 'systemctl --user status unityhub-keepalive'`。ライセンスの状態は
   `~/.config/unity3d/Unity/Unity.Licensing.Client.log` に `LicenseGroupOfflineValidityPeriodIsExpired` が無いこと
 
@@ -162,7 +170,7 @@ Linear 側では「Unity で検証できれば済む」Issue を `needs-unity`�
 - **ライセンス切れの症状**: Unity が終了コード 198 で落ち、結果 XML が出ない。Unity ログに
   `Access token is unavailable; failed to update` / `Found 0 entitlement groups and 0 free entitlements`、
   ライセンス処理のログ(`Unity.Licensing.Client.log`)に `LicenseGroupOfflineValidityPeriodIsExpired`。
-  ネットワークではなく Hub のログイン切れが原因。§6 の `hub-login.sh` で直す(2026-11-07 の失効は、
+  ネットワークではなく Hub のログイン切れが原因。§6 の `hub-vnc.sh` でログインし直す(2026-11-07 の失効は、
   Hub が常駐しておらず 10/8 のログインから約 30 日で切れたもの)
 - `unattended-upgrades` が有効。カーネル更新で NVIDIA モジュールが外れることはあるが Xvfb 運用には影響しない
 

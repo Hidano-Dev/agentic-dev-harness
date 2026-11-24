@@ -12,7 +12,7 @@
 # `ci` を作って既定にする(login キーリングには触らない)。代償として、Unity アカウントの
 # ログイン情報は暗号化されずに ~/.local/share/keyrings/ci.keyring に置かれる。
 #
-# 初回(とログインが切れたとき)は人が RDP で入って hub-login.sh を実行する。
+# 初回(とログインが切れたとき)は人が hub-vnc.sh で常駐 Hub の画面を開いてログインする。
 # 手順と背景は docs/onprem-unity-runner.md
 set -euo pipefail
 KEYRINGS="$HOME/.local/share/keyrings"
@@ -77,4 +77,4 @@ systemctl --user daemon-reload
 systemctl --user enable "$SVC.service" >/dev/null
 systemctl --user restart "$SVC.service"
 echo "$SVC: $(systemctl --user is-active "$SVC.service")"
-echo "初回は RDP で入り、端末で hub-login.sh を実行して Unity アカウントにログインする"
+echo "初回は hub-vnc.sh で常駐 Hub の画面を開き、Unity アカウントにログインする(docs/onprem-unity-runner.md §6)"
