@@ -95,7 +95,31 @@ GitHub のホスト鍵は `gh api meta --jq '.ssh_keys[]'` から `~/.ssh/known_
 ssh unity-ci 'ssh -T git@github.com'   # "Hi <owner>/<repo>!" なら deploy key が効いている
 ```
 
-### 6. CI ワークフロー側
+### 6. Unity Hub の常駐(ライセンスの自動更新)
+
+Hub ログインで有効化した Personal ライセンス(`~/.config/unity3d/Unity/licenses/UnityEntitlementLicense.xml`)は
+**オフラインで使える期間が約 30 日**しかない。Hub が動いていて、ログイン情報(アクセストークン)を
+持っていないと更新されない。2026-11-07 にこれで失効し、CI の Unity が全部落ちた(下の「落とし穴」)。
+そこで Hub を Xvfb 上の user systemd サービス `unityhub-keepalive` として常駐させる。
+
+```bash
+scp scripts/unity-runner/install-hub-keepalive.sh scripts/unity-runner/hub-login.sh unity-ci:~/ci-setup/
+ssh unity-ci 'bash ~/ci-setup/install-hub-keepalive.sh'
+```
+
+- Hub はログイン情報を Secret Service(GNOME キーリング)の**既定コレクション**に保存する。既定の `login` キーリングは
+  デスクトップにパスワードでログインしたときしか開かず、SSH や再起動のあとはロックされたままで、常駐の Hub が
+  読めない(ログに `AuthService: No tokens found, logging out`)。そこで **パスワード無しのキーリング `ci`** を作って
+  既定にし(`~/.local/share/keyrings/default` = `ci`)、サービスの起動前に毎回 `Unlock` する。`login` キーリングには触らない
+- 代償: Unity アカウントのログイン情報は暗号化されずに `~/.local/share/keyrings/ci.keyring` に置かれ、
+  同じユーザーで動く CI ジョブからも読める。fork からの PR でセルフホストのジョブを起動しない設定(§7)が前提
+- **ログイン(初回と、ログインが切れたとき)は人の作業**: RDP で入り、端末で `~/ci-setup/hub-login.sh` を実行する。
+  常駐を止めて画面に Hub を出すので、Sign in でログインし、Preferences > Licenses でライセンスが有効なのを確かめて
+  Hub を**終了**する(ウィンドウを閉じるだけだとトレイに残る)。終了すると常駐に戻る
+- 確認: `ssh unity-ci 'systemctl --user status unityhub-keepalive'`。ライセンスの状態は
+  `~/.config/unity3d/Unity/Unity.Licensing.Client.log` に `LicenseGroupOfflineValidityPeriodIsExpired` が無いこと
+
+### 7. CI ワークフロー側
 
 FacialControl の `.github/actions/run-unity-tests`(composite action)を参照。要点:
 
@@ -109,7 +133,7 @@ FacialControl の `.github/actions/run-unity-tests`(composite action)を参照�
   「外部コントリビューターの workflow は承認必須」と二重にする
 - 結果 XML と Unity ログ(`-logFile`)を artifact に上げる。ワーカーはこれを読んで直す
 
-### 7. ハーネス側の設定
+### 8. ハーネス側の設定
 
 対象リポジトリの `.kiro/orchestration/config.json`:
 
@@ -135,6 +159,11 @@ Linear 側では「Unity で検証できれば済む」Issue を `needs-unity`�
   モニタ非接続は原因ではない(ヘッドレスで動く)
 - 2 台目のランナーを同じリポジトリに足すと Unity のジョブが並列になり、同じ `_work` を共有しないので
   Library も別になる(ディスクは十分)。CI 待ちが長くなったら検討する
+- **ライセンス切れの症状**: Unity が終了コード 198 で落ち、結果 XML が出ない。Unity ログに
+  `Access token is unavailable; failed to update` / `Found 0 entitlement groups and 0 free entitlements`、
+  ライセンス処理のログ(`Unity.Licensing.Client.log`)に `LicenseGroupOfflineValidityPeriodIsExpired`。
+  ネットワークではなく Hub のログイン切れが原因。§6 の `hub-login.sh` で直す(2026-11-07 の失効は、
+  Hub が常駐しておらず 10/8 のログインから約 30 日で切れたもの)
 - `unattended-upgrades` が有効。カーネル更新で NVIDIA モジュールが外れることはあるが Xvfb 運用には影響しない
 
 ## 決定の経緯(2026-10-03)
