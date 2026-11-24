@@ -60,9 +60,13 @@ Description=Unity Hub on Xvfb (keeps the Personal license access token fresh)
 After=network-online.target
 
 [Service]
+# A desktop (RDP) login imports its WAYLAND_DISPLAY / AT-SPI bus into the user manager; without
+# this the Hub attaches to that session and dies with it. Stay on Xvfb only.
+UnsetEnvironment=WAYLAND_DISPLAY DISPLAY AT_SPI_BUS_ADDRESS XDG_SESSION_TYPE
+Environment=NO_AT_BRIDGE=1
 # The passwordless "ci" keyring is locked after each daemon start; open it without a prompt
 ExecStartPre=/usr/bin/busctl --user call $SECRETS_DEST /org/freedesktop/secrets org.freedesktop.Secret.Service Unlock ao 1 $CI_COLLECTION
-ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x800x24 -nolisten tcp" $(command -v unityhub) --disable-gpu
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1280x800x24 -nolisten tcp" $(command -v unityhub) --ozone-platform=x11 --disable-gpu
 Restart=always
 RestartSec=30
 

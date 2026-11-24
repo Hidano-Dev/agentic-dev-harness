@@ -17,4 +17,5 @@ fi
 systemctl --user stop "$SVC.service"
 trap 'systemctl --user start "$SVC.service"; echo "$SVC: $(systemctl --user is-active "$SVC.service")"' EXIT
 echo "Hub を起動します。Sign in でログインし、ライセンス(Preferences > Licenses)が有効か確認したら Hub を終了してください"
-unityhub
+# Native Wayland の Electron は RDP セッションの GNOME Shell を落とすことがある(2026-11-24)ので X11 で出す
+unityhub --ozone-platform=x11
