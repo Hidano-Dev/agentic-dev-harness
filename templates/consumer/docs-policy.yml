@@ -8,7 +8,8 @@
 #
 # - 判定の本体は配布物の .claude/skills/linear-worker/scripts/check_docs_policy.py。
 #   Harness Sync で最新化されるので、このファイル自体は薄く保つ
-# - .kiro/orchestration/config.json が無い(Linear 連携なし)リポジトリでは何もしない
+# - config(.claude/orchestration.json。無ければ旧 .kiro/orchestration/config.json)が無い
+#   (Linear 連携なし)リポジトリでは何もしない
 # - リリース用 PR は、ヘッドブランチが docs.release_branch_prefix(既定 release/)で
 #   始まるか、ラベル docs.release_label(既定 release-docs)が付いているもの。
 #   ラベルの付け外しでも再判定する

@@ -13,8 +13,18 @@
    前回の `.harness/version` にあって今回の manifest から外れたパスは削除する
 3. ワークフロー雛形(workflows)を配置先へコピー。配布元に無い雛形は warning でスキップ
 4. ルート CLAUDE.md に import 行(claude_md_import)を保証(無ければ末尾に追記。他の内容は触らない)
-5. `.kiro/orchestration/config.json` があれば JSON として検査し(不正なら中止、雛形の
-   プレースホルダが残っていれば warning)、配布元の migrate_config.py を適用する
+5. config を旧パス `.kiro/orchestration/config.json` だけに置いているリポジトリは新パス
+   `.claude/orchestration.json` へ移す(空になった `.kiro/orchestration/`・`.kiro/` は消す。`.kiro/` の
+   他の中身には触れない)。ただし次のときは移さない(旧パスのままでも動く):
+   - 配布物・配布ワークフロー以外の追跡中のファイル(SDD の dev-orchestrator・CLAUDE.md など)が旧パスを参照している
+   - 新パスが取り込み側の .gitignore で除外されている
+   - 同期前の policy_gate.py が新パスを知らない(同期 PR の検証は base 側の policy_gate.py が行うので、
+     新パスへの移動は「同期の範囲外」として人間の承認待ちになる)。この同期で新しい policy_gate.py が
+     入るので、次の同期で移す
+   両方のパスにあれば何も書かずに同期を失敗させる(どちらを正とするかは人間が決める。旧版のゲートは
+   新パスをコアと見ないので、新パスはエージェントの PR で人間の承認なしに入り得る。それを正にしないため)。
+   その config を JSON として検査し(不正なら中止、雛形のプレースホルダが残っていれば warning)、
+   配布元の migrate_config.py を適用する
 6. `.harness/version`(JSON: repo / ref / sha / owned)を書く
 7. 書いたファイルが取り込み側の .gitignore で除外されていないことを確認する(除外されると
    コミットされず、同期したつもりで欠ける)
@@ -38,11 +48,15 @@ import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 
+# config の置き場所の解決は配布物の harness_config.py(同じ clone の中にある)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "skills" / "linear-worker" / "scripts"))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, choose_config_rel  # noqa: E402
+
 DEFAULT_HARNESS_REPO = "Hidano-Dev/agentic-dev-harness"
 DEFAULT_REF = "main"
 MANIFEST_REL = "sync-manifest.json"
 VERSION_REL = ".harness/version"
-CONFIG_REL = ".kiro/orchestration/config.json"
+POLICY_GATE_REL = ".claude/skills/linear-worker/scripts/policy_gate.py"
 MIGRATE_REL = ".claude/skills/linear-worker/scripts/migrate_config.py"
 CLAUDE_MD_REL = "CLAUDE.md"
 
@@ -220,18 +234,94 @@ def ensure_claude_md(target: Path, import_line: str) -> str:
     return "appended"
 
 
+def _tracked_files(target: Path) -> list[str]:
+    """取り込み側の追跡中のファイル(git リポジトリでなければ .git 以外の全ファイル)。"""
+    if is_git_repo(target):
+        out = run_git(target, "ls-files", "-z").stdout
+        return sorted(p for p in out.split("\0") if p)
+    files = []
+    for dirpath, dirnames, filenames in os.walk(target, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        files += [(Path(dirpath) / n).relative_to(target).as_posix() for n in filenames]
+    return sorted(files)
+
+
+def _mentions_legacy_config(target: Path, skip: list[str]) -> list[str]:
+    """旧パスの config を参照している追跡中のテキストファイル(skip = 配布物・配布ワークフロー)。
+
+    SDD(unity-sdd-kit)の dev-orchestrator は旧パスの config の confirmation_channel を読む。
+    リポジトリ独自のスクリプト・CI・文書が旧パスを読んでいることもある。移すとそれらが設定を
+    見失うので、参照が残っている間は移さない。
+    """
+    needle = LEGACY_CONFIG_REL.encode("utf-8")
+    skip_set = set(skip)
+    hits: list[str] = []
+    for rel in _tracked_files(target):
+        if rel in (LEGACY_CONFIG_REL, CONFIG_REL) or under(rel, skip_set):
+            continue
+        full = target / rel
+        try:
+            if full.is_symlink() or not full.is_file() or full.stat().st_size > 1_000_000:
+                continue
+            data = full.read_bytes()
+        except OSError:
+            continue
+        if b"\0" not in data and needle in data:  # NUL を含むものはバイナリとして見ない
+            hits.append(rel)
+    return hits
+
+
+def plan_config_move(target: Path, skip: list[str]) -> tuple[str, str]:
+    """旧パスの config を新パスへ移すか。戻り値: (判定, 理由)。判定は move / keep / none。
+
+    配布物をコピーする前(同期前の policy_gate.py が残っているうち)に呼ぶ。
+    """
+    new, old = (target / CONFIG_REL), (target / LEGACY_CONFIG_REL)
+    if not old.is_file() or new.exists() or new.is_symlink():
+        return "none", ""
+    refs = _mentions_legacy_config(target, skip)
+    if refs:
+        return "keep", (f"{', '.join(refs)} が旧パス {LEGACY_CONFIG_REL} を参照しているため、config を移さず"
+                        f"旧パスのまま使います(参照を新パス {CONFIG_REL} に直すと次回の同期で移します)")
+    # 新パスが .gitignore で除外されていると、移した config がコミットされず旧パスの削除だけが残る
+    if is_git_repo(target) and subprocess.run(
+            ["git", "-C", str(target), "check-ignore", "-q", "--no-index", CONFIG_REL],
+            capture_output=True).returncode == 0:
+        return "keep", (f"新パス {CONFIG_REL} が .gitignore で除外されているため、config を移さず旧パス "
+                        f"{LEGACY_CONFIG_REL} のまま使います(除外を外すと次回の同期で移します)")
+    gate = target / POLICY_GATE_REL
+    if gate.is_file() and CONFIG_REL.encode("utf-8") not in gate.read_bytes():
+        return "keep", (f"同期前の policy_gate.py が新パス {CONFIG_REL} を知らないため、config の移動は"
+                        f"次回の同期で行います(この同期 PR を policy-gate が自動で通せるようにするため)")
+    return "move", ""
+
+
+def move_legacy_config(target: Path) -> None:
+    """旧パスの config を新パスへ移し、空になった `.kiro/orchestration/`・`.kiro/` を消す。"""
+    src, dst = target / LEGACY_CONFIG_REL, target / CONFIG_REL
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(src, dst)
+    for d in (src.parent, src.parent.parent):  # .kiro/orchestration/ → .kiro/
+        try:
+            d.rmdir()  # 空のときだけ消える(他の中身があれば OSError で残す)
+        except OSError:
+            break
+    log(f"::notice::config を {LEGACY_CONFIG_REL} から {CONFIG_REL} へ移しました")
+
+
 def check_and_migrate_config(target: Path, export: Path) -> str:
-    f = target / CONFIG_REL
-    if not f.is_file():
-        log(f"::notice::{CONFIG_REL} が無いため linear-worker は起動しません(Git 運用ルールのみ)")
+    rel = choose_config_rel(lambda p: (target / p).is_file(), log)
+    if rel is None:
+        log(f"::notice::{CONFIG_REL}(旧 {LEGACY_CONFIG_REL})が無いため linear-worker は起動しません(Git 運用ルールのみ)")
         return "absent"
+    f = target / rel
     text = f.read_text(encoding="utf-8")
     try:
         json.loads(text)
     except json.JSONDecodeError as e:
-        raise SyncError(f"{CONFIG_REL} が JSON として不正: {e}") from e
+        raise SyncError(f"{rel} が JSON として不正: {e}") from e
     if re.search(r'"<[^"]*>"', text):
-        log(f"::warning::{CONFIG_REL} に雛形のプレースホルダ(<...>)が残っています")
+        log(f"::warning::{rel} に雛形のプレースホルダ(<...>)が残っています")
     migrate = export / MIGRATE_REL
     if not migrate.is_file():
         return "checked"
@@ -289,7 +379,7 @@ def apply_sync(harness: Path, target: Path, sha: str | None = None,
                     stale.append(rel)
 
         # 1. 事前検査(全部見てから書く: 途中で失敗して半端な状態を残さない)
-        dests = list(owned) + list(workflows.values()) + stale + [VERSION_REL, CONFIG_REL]
+        dests = list(owned) + list(workflows.values()) + stale + [VERSION_REL, CONFIG_REL, LEGACY_CONFIG_REL]
         if import_line:
             dests.append(CLAUDE_MD_REL)
         links = gitlinks(target)
@@ -305,6 +395,15 @@ def apply_sync(harness: Path, target: Path, sha: str | None = None,
             hits = [l for l in sorted(src_links) if l == rel or l.startswith(rel + "/")]
             if hits:
                 raise SyncError(f"配布元の {rel} にシンボリックリンクがある(配布できない): {', '.join(hits)}")
+
+        # 新旧両方の config があれば、どちらを正とするかは人間が決める(旧版のゲートは新パスをコアと見ないので、
+        # 新パスはエージェントの PR で承認なしに入り得る。同期がそれを正として採用しないよう止める)
+        if (target / CONFIG_REL).exists() and (target / LEGACY_CONFIG_REL).exists():
+            raise SyncError(
+                f"{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方がある。どちらを正とするか決めて、"
+                f"どちらかを削除してから再実行すること(同期は config の移行も新パスの採用もしない)")
+        # config の移動は、同期前の policy_gate.py を見て決めるので配布物のコピーより前に判定する
+        move, move_reason = plan_config_move(target, list(owned) + list(workflows.values()))
 
         result: dict = {"sha": full_sha, "ref": ref, "repo": harness_repo,
                         "owned": [], "workflows": [], "removed": []}
@@ -331,7 +430,12 @@ def apply_sync(harness: Path, target: Path, sha: str | None = None,
             result["workflows"].append(dest)
         # 4. CLAUDE.md
         result["claude_md"] = ensure_claude_md(target, import_line) if import_line else "skipped"
-        # 5. config
+        # 5. config(旧パスだけなら新パスへ移してから検査・移行する)
+        if move == "move":
+            move_legacy_config(target)
+            result["config_moved"] = f"{LEGACY_CONFIG_REL} -> {CONFIG_REL}"
+        elif move_reason:
+            log(f"::notice::{move_reason}")
         result["config"] = check_and_migrate_config(target, export)
         # 6. version
         vf = target / VERSION_REL

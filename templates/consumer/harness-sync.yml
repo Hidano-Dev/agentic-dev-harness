@@ -8,7 +8,8 @@
 # - 適用の本体は配布元の scripts/sync/apply_sync.py(clone した配布元から実行する):
 #   配布物(sync-manifest.json の owned。ディレクトリは丸ごと置換)・配布ワークフロー
 #   (このファイル・docs-policy.yml・policy-gate.yml 等)のコピー、ルート CLAUDE.md の
-#   import 行の保証、.kiro/orchestration/config.json の検査と移行(migrate_config.py)、
+#   import 行の保証、config(.claude/orchestration.json)の検査と移行(migrate_config.py。旧パス
+#   .kiro/orchestration/config.json だけのリポジトリは新パスへ移す。条件は apply_sync.py)、
 #   `.harness/version` の記録。同期先のシンボリックリンク・submodule・.gitignore による除外は
 #   検出して中止する
 # - 同期 PR(ブランチ chore/harness-sync-<sha7>、ラベル harness-sync)は policy-gate が

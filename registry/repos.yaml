@@ -12,7 +12,7 @@
 #                   | template-init(旧 unity-sdd-template 生成先。orchestration-sync.yml で追従していた旧経路)
 #                   | none(取り込まない)
 #   harness       … linear-worker を動かしているか。null なら linear-worker なし
-#     config      … .kiro/orchestration/config.json の有無(true / false / pending)
+#     config      … config(.claude/orchestration.json。旧 .kiro/orchestration/config.json も可)の有無(true / false / pending)
 #     linear      … チーム / プロジェクト
 #     routine     … claude.ai/code/routines 上の Routine(名前・cron は UTC・ID)
 #     status      … pilot(試験運用) | active | paused

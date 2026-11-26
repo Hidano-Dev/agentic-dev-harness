@@ -9,7 +9,7 @@ claude.ai/code の Routine(定期実行クラウドセッション)に設定す�
 - **対象リポジトリ** は Routine の「ソース」設定で決まる(セッションはそのリポジトリを
   checkout した状態で始まる)
 - **Linear のチーム / プロジェクト・ラベル名・チェックコマンド・自動マージ可否** は
-  リポジトリ側の `.kiro/orchestration/config.json` が持つ
+  リポジトリ側の `.claude/orchestration.json`(旧 `.kiro/orchestration/config.json`)が持つ
 
 プロンプトには手順を書かない(手順はすべて SKILL.md にあり、Harness Sync で自動更新される。
 プロンプトに手順を書くと、スキルの改定のたびに全 Routine を手で直す必要が出る — 2026-11-01 決定)。
@@ -28,7 +28,7 @@ Skill / SlashCommand / Task(Agent)。
 
 1. `git fetch origin` し、リポジトリの既定ブランチの最新を checkout したうえで、
    `.claude/rules/git-workflow.md` と `.claude/skills/linear-worker/SKILL.md` を読む。
-2. SKILL.md のポリシーに**厳密に**従い、`.kiro/orchestration/config.json` の設定で
+2. SKILL.md のポリシーに**厳密に**従い、`.claude/orchestration.json`(旧 `.kiro/orchestration/config.json`)の設定で
    §0(前提確認)→ §1(並行度ガード・駐機 PR の巡回・選定)→ §2(claim)→ §3(実行)→
    §4(レビューとマージ)→ §5(報告・Linear / Notion の更新)まで進める。
    このプロンプトと SKILL.md が食い違う場合は SKILL.md を優先する。

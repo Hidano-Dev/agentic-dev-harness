@@ -41,8 +41,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# config の置き場所。harness_config.py と同じ(conflict-sweeper がこのファイルだけを取り出して実行するので
+# import せず写している。tests/test_harness_config.py が一致を検査する)
+CONFIG_REL = ".claude/orchestration.json"
+LEGACY_CONFIG_REL = ".kiro/orchestration/config.json"
 # .txt は requirements.txt / CMakeLists.txt のような依存・ビルド定義と区別できないので既定に含めない
 DEFAULT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc"]
 # 拡張子の設定にかかわらず自動解消しないファイル名(依存・ビルド定義とエージェントへの指示)。
@@ -71,6 +75,55 @@ class ResolveError(Exception):
     pass
 
 
+def choose_config_rel(exists: Callable[[str], bool], warn: Callable[[str], None] | None = None) -> str | None:
+    """存在する config の相対パス(新パス優先)。どちらも無ければ None。harness_config.choose_config_rel の写し。"""
+    new, old = exists(CONFIG_REL), exists(LEGACY_CONFIG_REL)
+    if new and old and warn is not None:
+        warn(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。{CONFIG_REL} を使います"
+             f"(旧パスのファイルは削除してください)")
+    if new:
+        return CONFIG_REL
+    if old:
+        return LEGACY_CONFIG_REL
+    return None
+
+
+def strictest_config(new: dict, old: dict, default_protected: list[str]) -> dict:
+    """新旧両方の config があるときの厳しい側に倒した config。harness_config.strictest_config の写し。"""
+    def obj(cfg: dict, key: str) -> dict:
+        value = cfg.get(key)
+        return value if isinstance(value, dict) else {}
+
+    def protected(am: dict) -> list:
+        paths = am.get("protected_paths")
+        if isinstance(paths, list) and all(isinstance(p, str) for p in paths):
+            return list(paths)
+        return list(default_protected)
+
+    merged = json.loads(json.dumps(new))
+    am_new, am_old = obj(new, "auto_merge"), obj(old, "auto_merge")
+    am = dict(am_new)
+    am["protected_paths"] = list(dict.fromkeys(protected(am_new) + protected(am_old)))
+    am["enabled"] = am_new.get("enabled") is True and am_old.get("enabled") is True
+    if am_new.get("merge_parked") is False or am_old.get("merge_parked") is False:
+        am["merge_parked"] = False
+    merged["auto_merge"] = am
+    rv_new, rv_old = obj(new, "review"), obj(old, "review")
+    if rv_new or rv_old:
+        rv = dict(rv_new)
+        if rv_new.get("fail_open") is False or rv_old.get("fail_open") is False:
+            rv["fail_open"] = False
+        if rv_new.get("provider", "action") != rv_old.get("provider", "action"):
+            rv["provider"] = "action"
+        merged["review"] = rv
+    for key, flag in (("fast_track", "enabled"), ("conflicts", "auto_resolve")):
+        if obj(new, key) != obj(old, key):
+            merged[key] = {**obj(new, key), flag: False}
+    if obj(new, "github") != obj(old, "github"):
+        merged["github"] = {**obj(new, "github"), "release_branch": None}
+    return merged
+
+
 def git(args: list[str], cwd: Path, *, input: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess:
     r = subprocess.run(["git", *args], cwd=cwd, input=input, capture_output=True)
     if check and r.returncode != 0:
@@ -92,12 +145,17 @@ def _section(cfg: dict, key: str, config: Path) -> dict:
     return sec
 
 
-def load_settings(config: Path) -> dict:
-    cfg: dict = {}
-    if config.is_file():
-        cfg = json.loads(config.read_text(encoding="utf-8"))
-        if not isinstance(cfg, dict):
-            raise ResolveError(f"{config} の最上位が JSON オブジェクトではない")
+def _read_config(config: Path) -> dict:
+    cfg = json.loads(config.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict):
+        raise ResolveError(f"{config} の最上位が JSON オブジェクトではない")
+    return cfg
+
+
+def load_settings(config: Path, cfg: dict | None = None) -> dict:
+    """config の設定。cfg を渡せばファイルを読まずにそれを使う(config はメッセージ用)。"""
+    if cfg is None:
+        cfg = _read_config(config) if config.is_file() else {}
     conflicts = _section(cfg, "conflicts", config)
     ft = _section(cfg, "fast_track", config)
     exts = _str_list(conflicts, "auto_resolve_extensions", DEFAULT_EXTENSIONS,
@@ -292,7 +350,7 @@ def try_resolve(root: Path, path: str, stages: dict[int, tuple[str, str]], setti
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", default=None, help=f"設定ファイル(既定: リポジトリ直下の {CONFIG_REL.as_posix()})")
+    ap.add_argument("--config", default=None, help=f"設定ファイル(既定: リポジトリ直下の {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--dry-run", action="store_true", help="判定だけ行い、ファイルの書き込み・git add をしない")
     a = ap.parse_args(argv)
     # JSON は機械が読むので、端末のコードページ(Windows の cp932 等)によらず UTF-8 で出す
@@ -303,7 +361,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         top = git(["rev-parse", "--show-toplevel"], Path.cwd()).stdout.decode().strip()
         root = Path(top)
-        settings = load_settings(Path(a.config) if a.config else root / CONFIG_REL)
+        if a.config:
+            settings = load_settings(Path(a.config))
+        elif (root / CONFIG_REL).is_file() and (root / LEGACY_CONFIG_REL).is_file():
+            # 両方あれば厳しい側(食い違えば自動解消しない)。どちらか片方を正とすると制約を外せるため
+            print(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。厳しい側の設定を使います"
+                  f"(どちらかを削除してください)", file=sys.stderr)
+            merged = strictest_config(_read_config(root / CONFIG_REL), _read_config(root / LEGACY_CONFIG_REL), [])
+            settings = load_settings(root / CONFIG_REL, merged)
+            if merged.get("conflicts", {}).get("auto_resolve") is False:
+                settings["extensions"] = []  # 自動解消しない
+        else:
+            rel = choose_config_rel(lambda p: (root / p).is_file())
+            settings = load_settings(root / (rel or CONFIG_REL))
         settings["owned"] = harness_owned(root)
         resolved: list[str] = []
         unresolved: list[str] = []

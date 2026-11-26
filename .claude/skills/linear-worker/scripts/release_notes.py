@@ -36,11 +36,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# `python3 -I` ではスクリプトのディレクトリが sys.path に入らないので足してから読む
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, resolve_config_path  # noqa: E402
 MANIFEST_CANDIDATES = [Path("sync-manifest.json"), Path(".harness/sync-manifest.json")]
 MARKER = "<!-- harness-release-notes -->"
 DEFAULT_PROTECTED_PATHS = [
     ".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/",
+    ".claude/orchestration.json",
 ]
 # sync manifest が無いときの既定(配布元の sync-manifest.json の owned + workflows のキー・値)
 DEFAULT_OWNED = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md", ".harness/invariants.json"]
@@ -272,10 +275,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", required=True, help="リリースブランチ(例: origin/main)")
     ap.add_argument("--head", required=True, help="昇格元の既定ブランチ(例: origin/develop)")
-    ap.add_argument("--config", default=str(CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--manifest", default=None, help="sync manifest(既定: sync-manifest.json → .harness/sync-manifest.json)")
     ap.add_argument("--output", default=None, help="書き出すファイル(既定: 標準出力)")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(resolve_config_path())
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", newline="\n")

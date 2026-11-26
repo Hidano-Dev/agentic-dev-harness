@@ -4,7 +4,7 @@
 # 既定ブランチ(例: develop)→ リリースブランチ(例: main)の Release PR を常に 1 本維持し、
 # リリースブランチへの push(Release PR のマージ・hotfix)を既定ブランチへ戻す back-merge PR を作る。
 #
-# - config(.kiro/orchestration/config.json)の github.release_branch が null・未設定なら
+# - config(.claude/orchestration.json。無ければ旧 .kiro/orchestration/config.json)の github.release_branch が null・未設定なら
 #   何もしない(単一ブランチ運用)。既定ブランチは github.default_branch(無ければリポジトリの既定)
 # - 既定ブランチへの push: 既定ブランチがリリースブランチより進んでいれば、open な Release PR
 #   (タイトル "Release: <default> → <release>"、ラベル release)が無ければ作り、あれば本文を更新する。
@@ -57,8 +57,10 @@ jobs:
           python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
           from pathlib import Path
-          p = Path(".kiro/orchestration/config.json")
-          cfg = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+          # 新パス優先、無ければ旧パス(harness_config.py と同じ順)
+          p = next((c for c in (Path(".claude/orchestration.json"), Path(".kiro/orchestration/config.json"))
+                    if c.is_file()), None)
+          cfg = json.loads(p.read_text(encoding="utf-8")) if p else {}
           gh = cfg.get("github") or {}
           default = gh.get("default_branch") or os.environ.get("REPO_DEFAULT") or ""
           release = gh.get("release_branch") or ""

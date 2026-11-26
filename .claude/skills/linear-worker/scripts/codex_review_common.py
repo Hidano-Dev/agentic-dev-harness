@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Codex レビュー(review_plan.py / post_review.py / review_status.py)の共通処理。
 
-- config(`.kiro/orchestration/config.json`)の `review.*` の読み出しと既定値
+- config(`.claude/orchestration.json`。旧 `.kiro/orchestration/config.json` も読む。harness_config.py)の
+  `review.*` の読み出しと既定値
 - PR コメント / PR review に埋める隠しマーカーの書式と解析
   `<!-- harness-codex-review sha=<sha> round=<n> patch=<patch-id> mode=<mode> -->`
   `<!-- harness-codex-findings <base64(JSON)> -->`
@@ -22,7 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, resolve_config_path  # noqa: E402,F401
+
 CHECK_NAME = "codex-review"  # ワークフローの job 名 = branch protection の必須チェック名
 SEVERITIES = ("P0", "P1", "P2", "P3")
 BLOCKING = ("P0", "P1")  # スレッド化して未解決ならマージを止める重大度

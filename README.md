@@ -17,7 +17,7 @@ Codex skills / `.kiro/settings` / `AGENTS.md`)も配布していたが、2026-10
 | **agentic-dev-harness**(本リポジトリ) | 配布物(`.claude/skills/linear-worker/` `.claude/rules/git-workflow.md`)の正本。実行リポジトリの台帳(`registry/`)と導入手順(`docs/`) | — |
 | [unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit) | SDD ワークフロー一式(kiro commands / dev-orchestrator / Codex skills / `.kiro/settings` / `AGENTS.md`)の正本。Unity 向けの拡張を含む | 独立。取り込み側では両方の同期ワークフローが共存する(所有パスが重ならない) |
 | [unity-project-template](https://github.com/Hidano-Dev/unity-project-template) | 新規 Unity プロジェクトのリポジトリ生成テンプレート(設定済み Unity プロジェクト同梱・Unity バージョン管理・Unity CLI) | 独立(SDD / ワーカーを持たない)。生成後に必要なものを導入する |
-| 実行リポジトリ(unity-renderer など) | 実際に開発が進む場所。配布物を取り込み、`.kiro/orchestration/config.json` でリポジトリ固有の値を持つ | `registry/repos.yaml` に登録。Routine(定期実行)がここで linear-worker を起動する |
+| 実行リポジトリ(unity-renderer など) | 実際に開発が進む場所。配布物を取り込み、`.claude/orchestration.json` でリポジトリ固有の値を持つ | `registry/repos.yaml` に登録。Routine(定期実行)がここで linear-worker を起動する |
 
 原則: **配布物の修正は本リポジトリで行い、実行リポジトリでは直接編集しない**。
 実行リポジトリ側で緊急に直した場合は、同じ変更を本リポジトリへ戻す(戻し忘れると次回の同期で消える)。
@@ -56,21 +56,27 @@ docs/                   … 導入手順・運用メモ(配布されない)
 
 - 所有ディレクトリは丸ごと本リポジトリの管理下なので、本リポジトリで削除したファイルは
   取り込み側からも削除される。それ以外(自作 skill、`.claude/settings.json`、SDD 一式、
-  `.kiro/specs/` `.kiro/steering/` `.kiro/orchestration/`)には触れない
+  `.kiro/specs/` `.kiro/steering/`)には触れない。例外として、config を旧パス
+  `.kiro/orchestration/config.json` だけに置いているリポジトリは新パス `.claude/orchestration.json` へ移す
+  (空になった `.kiro/orchestration/` は消す。配布物以外の追跡中のファイルが旧パスを参照している間は移さない。
+  両方あれば同期は失敗する)
 - ルート `CLAUDE.md` はコピーしない。`@.claude/rules/git-workflow.md` の import 行が無ければ
   同期時に末尾へ追記する(それ以外の内容には触れない)
-- `.kiro/orchestration/config.json` の `auto_merge` には、配布元が定義した移行
+- config(`.claude/orchestration.json`)の `auto_merge` には、配布元が定義した移行
   (`.claude/skills/linear-worker/scripts/migrate_config.py`)を同期のたびに未適用分だけ適用する
 - 本リポジトリは公開(public)なので、GitHub Actions はトークンなしで clone できる —
   **秘匿情報を本リポジトリに置かないこと**
 
-## リポジトリ固有の設定(`.kiro/orchestration/config.json`)
+## リポジトリ固有の設定(`.claude/orchestration.json`)
 
 配布物はリポジトリ固有の値(Linear のチーム名、ラベル名、テストコマンド、自動マージの可否など)を
-持たない。実行リポジトリは `.kiro/orchestration/config.json` を 1 つ置き、
+持たない。実行リポジトリは `.claude/orchestration.json` を 1 つ置き、
 linear-worker(キュー・ゲート・自動マージ)がそれを読む(SDD 導入時は dev-orchestrator も
 確認チャネルを読む)。雛形は `.claude/skills/linear-worker/templates/orchestration-config.json`、
 キーの意味は `linear-worker/SKILL.md` の「設定」節。
+旧パス `.kiro/orchestration/config.json` も読む(新パスが無ければ旧パス。両方あればゲートは厳しい側に倒し、
+同期は失敗する。
+解決は `.claude/skills/linear-worker/scripts/harness_config.py`)。
 
 このファイルが無いリポジトリでは、linear-worker は起動せず、git-workflow は
 「Linear 連携なし・自動マージなし(従来どおりユーザー承認)」として振る舞う。

@@ -9,7 +9,7 @@ templates/consumer/policy-gate.yml が base 側のこのスクリプトを呼ぶ
    無ければスキップ。使う invariants.json は base 側のもの(同期 PR として検証できた場合と、
    人間が承認した PR が invariants.json 自体を変えている場合は head 側)
 2. 同期 PR: `.harness/version` を変更していて、変更が配布物・`.harness/`・ワークフロー・
-   CLAUDE.md・config.json に収まり、配布元の verify_harness_sync.py が「指定 sha の適用結果と
+   CLAUDE.md・config(新旧どちらのパスも)に収まり、配布元の verify_harness_sync.py が「指定 sha の適用結果と
    完全一致」と判定すれば成功(人間の承認は不要)。検証スクリプトを実行する前に、その sha が
    配布元の --harness-ref に含まれ、base 側の記録から前進していることをこのスクリプト自身が確かめる。
    同期 PR の形だが完全一致を確かめられなかったものは 4 と同じく人間の承認で通す
@@ -50,22 +50,27 @@ from typing import Callable
 
 DEFAULT_HARNESS_REPO = "Hidano-Dev/agentic-dev-harness"
 DEFAULT_HARNESS_REF = "main"
-CONFIG_REL = ".kiro/orchestration/config.json"
+# config の置き場所。harness_config.py と同じ(単独で動くので import せず写している。
+# tests/test_harness_config.py が一致を検査する)
+CONFIG_REL = ".claude/orchestration.json"
+LEGACY_CONFIG_REL = ".kiro/orchestration/config.json"
 VERSION_REL = ".harness/version"
 INVARIANTS_REL = ".harness/invariants.json"
 MANIFEST_REL = "sync-manifest.json"
 VERIFY_REL = "scripts/sync/verify_harness_sync.py"
 # コア(人間の承認が必須)の既定。config の auto_merge.protected_paths があればそちらを使う
-DEFAULT_CORE = [".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/"]
+DEFAULT_CORE = [".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/",
+                CONFIG_REL]
 # config に関わらず常にコアとして扱う(ゲート自身・同期記録・config を守る)。sync-manifest.json と
 # scripts/sync/ は取り込み側にも置かせない(足すと配布元とみなされ、配布物の保護が外れるため)
-FLOOR_CORE = [".github/", ".harness/", ".kiro/orchestration/", "sync-manifest.json", "scripts/sync/"]
+FLOOR_CORE = [".github/", ".harness/", ".kiro/orchestration/", CONFIG_REL, "sync-manifest.json", "scripts/sync/"]
 # 配布元でだけ追加するコア
 DISTRIBUTOR_CORE = [MANIFEST_REL, "scripts/sync/", "templates/consumer/"]
 # `.harness/version` に owned が無いときの配布物(配布元の sync-manifest.json と揃える)
 DEFAULT_OWNED = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md", ".harness/invariants.json"]
-# 同期 PR が変更してよいパス(この範囲に収まる PR だけ完全一致検証を試す)
-SYNC_EXTRA = [".harness/", ".github/workflows/", "CLAUDE.md", CONFIG_REL]
+# 同期 PR が変更してよいパス(この範囲に収まる PR だけ完全一致検証を試す)。config は新旧どちらのパスも
+# (Harness Sync が旧パスから新パスへ移すため)
+SYNC_EXTRA = [".harness/", ".github/workflows/", "CLAUDE.md", CONFIG_REL, LEGACY_CONFIG_REL]
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
@@ -85,6 +90,19 @@ def show(repo: Path, rev: str, path: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def choose_config_rel(exists: Callable[[str], bool], warn: Callable[[str], None] | None = None) -> str | None:
+    """存在する config の相対パス(新パス優先)。どちらも無ければ None。harness_config.choose_config_rel の写し。"""
+    new, old = exists(CONFIG_REL), exists(LEGACY_CONFIG_REL)
+    if new and old and warn is not None:
+        warn(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。{CONFIG_REL} を使います"
+             f"(旧パスのファイルは削除してください)")
+    if new:
+        return CONFIG_REL
+    if old:
+        return LEGACY_CONFIG_REL
+    return None
+
+
 def load_json(text: str | None):
     if text is None:
         return None
@@ -92,6 +110,66 @@ def load_json(text: str | None):
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def strictest_config(new: dict, old: dict, default_protected: list[str]) -> dict:
+    """新旧両方の config があるときの厳しい側に倒した config。harness_config.strictest_config の写し。"""
+    def obj(cfg: dict, key: str) -> dict:
+        value = cfg.get(key)
+        return value if isinstance(value, dict) else {}
+
+    def protected(am: dict) -> list:
+        paths = am.get("protected_paths")
+        if isinstance(paths, list) and all(isinstance(p, str) for p in paths):
+            return list(paths)
+        return list(default_protected)
+
+    merged = json.loads(json.dumps(new))
+    am_new, am_old = obj(new, "auto_merge"), obj(old, "auto_merge")
+    am = dict(am_new)
+    am["protected_paths"] = list(dict.fromkeys(protected(am_new) + protected(am_old)))
+    am["enabled"] = am_new.get("enabled") is True and am_old.get("enabled") is True
+    if am_new.get("merge_parked") is False or am_old.get("merge_parked") is False:
+        am["merge_parked"] = False
+    merged["auto_merge"] = am
+    rv_new, rv_old = obj(new, "review"), obj(old, "review")
+    if rv_new or rv_old:
+        rv = dict(rv_new)
+        if rv_new.get("fail_open") is False or rv_old.get("fail_open") is False:
+            rv["fail_open"] = False
+        if rv_new.get("provider", "action") != rv_old.get("provider", "action"):
+            rv["provider"] = "action"
+        merged["review"] = rv
+    for key, flag in (("fast_track", "enabled"), ("conflicts", "auto_resolve")):
+        if obj(new, key) != obj(old, key):
+            merged[key] = {**obj(new, key), flag: False}
+    if obj(new, "github") != obj(old, "github"):
+        merged["github"] = {**obj(new, "github"), "release_branch": None}
+    return merged
+
+
+def _config_blob(repo: Path, rev: str, rel: str) -> dict | None:
+    """rev の rel がファイル(blob)で JSON オブジェクトならその内容。それ以外は None。"""
+    r = git(repo, "cat-file", "-t", f"{rev}:{rel}", check=False)
+    if r.returncode != 0 or r.stdout.strip() != "blob":
+        return None
+    data = load_json(show(repo, rev, rel))
+    return data if isinstance(data, dict) else None
+
+
+def base_config(repo: Path, rev: str) -> dict | None:
+    """rev の config。新パス優先で、新パスが壊れている(JSON でない・ディレクトリ等)なら旧パスを使う。
+
+    両方が読めるときは strictest_config で厳しい側に倒す(片方だけを正とすると、保護されていない側の
+    ファイルを置く・書き換えるだけで保護パスを外せるため)。どちらも読めなければ None(既定値)。
+    """
+    new = _config_blob(repo, rev, CONFIG_REL)
+    old = _config_blob(repo, rev, LEGACY_CONFIG_REL)
+    if new is not None and old is not None:
+        print(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。保護パスは両方の和集合、"
+              f"その他の設定は厳しい側で判定します(どちらかを削除してください)", file=sys.stderr)
+        return strictest_config(new, old, DEFAULT_CORE)
+    return new if new is not None else old
 
 
 def matches(path: str, prefixes: list[str]) -> bool:
@@ -303,7 +381,7 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         config = load_json(config_path.read_text(encoding="utf-8")) if config_path.is_file() else None
     else:
         # PR 自身が書き換えた config で保護を外せないよう、base 側の config を使う
-        config = load_json(show(repo_dir, base, CONFIG_REL))
+        config = base_config(repo_dir, base)
     core = core_paths(config)
     gh_cfg = config.get("github") if isinstance(config, dict) and isinstance(config.get("github"), dict) else {}
     # Release PR(作業ブランチ → リリースブランチの昇格 PR)。同期の変更と通常の変更がまとめて入るので
@@ -411,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo-dir", default=".")
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""), help="owner/name(レビュー取得用)")
     ap.add_argument("--pr", type=int, help="PR 番号(レビュー取得用)")
-    ap.add_argument("--config", help="config.json(既定: base 側の .kiro/orchestration/config.json)")
+    ap.add_argument("--config", help=f"config のパス(既定: base 側の {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--harness-repo", default=os.environ.get("HARNESS_REPO") or DEFAULT_HARNESS_REPO)
     ap.add_argument("--harness-ref", default=os.environ.get("HARNESS_REF") or DEFAULT_HARNESS_REF)
     ap.add_argument("--harness-url", help="配布元の clone URL(既定: https://github.com/<harness-repo>.git)")

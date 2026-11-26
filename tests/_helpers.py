@@ -85,11 +85,17 @@ def minimal_config() -> dict:
             "applied_migrations": [m for m in tpl.get("applied_migrations", []) if "auto-merge-enabled" in m]}
 
 
-def make_consumer(path: Path, config: dict | None = None) -> tuple[Path, str]:
+LEGACY_CONFIG_REL = ".kiro/orchestration/config.json"
+CONFIG_REL = ".claude/orchestration.json"
+
+
+def make_consumer(path: Path, config: dict | None = None,
+                  config_rel: str = LEGACY_CONFIG_REL) -> tuple[Path, str]:
+    """取り込み側を作る。config は既定で旧パスに置く(既存の取り込み側と同じ。同期で新パスへ移る)。"""
     init_repo(path, "develop")
     write(path / "README.md", "# consumer\n")
     write(path / "CLAUDE.md", "# project notes\n")
     write(path / "src" / "app.py", "print('hi')\n")
     if config is not None:
-        write(path / ".kiro/orchestration/config.json", json.dumps(config, indent=2) + "\n")
+        write(path / config_rel, json.dumps(config, indent=2) + "\n")
     return path, commit_all(path, "initial")

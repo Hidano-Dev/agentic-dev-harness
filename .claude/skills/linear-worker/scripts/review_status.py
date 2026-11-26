@@ -280,8 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pr", type=int, required=True)
     ap.add_argument("--provider", choices=("action", "app"), help="既定: config の review.provider(無ければ action)")
     ap.add_argument("--repo")
-    ap.add_argument("--config", default=str(common.CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {common.CONFIG_REL}、無ければ旧 {common.LEGACY_CONFIG_REL})")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(common.resolve_config_path())
     try:
         cfg = common.load_config(Path(a.config))
         settings = common.review_settings(cfg)

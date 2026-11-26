@@ -85,7 +85,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          cfg=.kiro/orchestration/config.json
+          # 新パス優先、無ければ旧パス(harness_config.py と同じ順)
+          cfg=.claude/orchestration.json
+          [ -f "$cfg" ] || cfg=.kiro/orchestration/config.json
           base=""
           auto_resolve=true
           label=needs-conflict-resolution
@@ -104,6 +106,11 @@ jobs:
             base=$(sed -n 1p <<<"$settings")
             auto_resolve=$(sed -n 2p <<<"$settings")
             label=$(sed -n 3p <<<"$settings")
+          fi
+          # 新旧両方の config があれば自動解消しない(厳しい側。片方を正とすると制約を外せるため)
+          if [ -f .claude/orchestration.json ] && [ -f .kiro/orchestration/config.json ]; then
+            echo "::warning::.claude/orchestration.json と .kiro/orchestration/config.json の両方があるため自動解消しません(どちらかを削除してください)"
+            auto_resolve=false
           fi
           echo "auto_resolve=$auto_resolve" >> "$GITHUB_OUTPUT"
           echo "label=$label" >> "$GITHUB_OUTPUT"
@@ -141,7 +148,9 @@ jobs:
           # スクリプトと config を退避しておく
           if [ "$AUTO_RESOLVE" = true ]; then cp "$resolver" "$tools/resolve_conflicts.py"; fi
           cfg_copy="$tools/config.json"
-          if [ -f .kiro/orchestration/config.json ]; then cp .kiro/orchestration/config.json "$cfg_copy"; fi
+          for c in .claude/orchestration.json .kiro/orchestration/config.json; do
+            if [ -f "$c" ]; then cp "$c" "$cfg_copy"; break; fi
+          done
 
           bot_login="${APP_SLUG}[bot]"
           bot_id=$(gh api "/users/${bot_login}" --jq .id)
