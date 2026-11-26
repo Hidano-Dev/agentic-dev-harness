@@ -107,6 +107,11 @@ jobs:
             auto_resolve=$(sed -n 2p <<<"$settings")
             label=$(sed -n 3p <<<"$settings")
           fi
+          # 新旧両方の config があれば自動解消しない(厳しい側。片方を正とすると制約を外せるため)
+          if [ -f .claude/orchestration.json ] && [ -f .kiro/orchestration/config.json ]; then
+            echo "::warning::.claude/orchestration.json と .kiro/orchestration/config.json の両方があるため自動解消しません(どちらかを削除してください)"
+            auto_resolve=false
+          fi
           echo "auto_resolve=$auto_resolve" >> "$GITHUB_OUTPUT"
           echo "label=$label" >> "$GITHUB_OUTPUT"
           if [ -z "$base" ]; then

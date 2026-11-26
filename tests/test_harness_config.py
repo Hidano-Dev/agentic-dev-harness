@@ -13,7 +13,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from _helpers import ROOT, WORKER_SCRIPTS
+from _helpers import ROOT, WORKER_SCRIPTS, commit_all, git, init_repo
 
 import harness_config as hc
 import policy_gate as pg
@@ -76,6 +76,124 @@ class ChooseConfigRelTest(unittest.TestCase):
             self.assertEqual(err.getvalue(), "")
 
 
+class StrictestConfigTest(unittest.TestCase):
+    DEFAULT = ["D/"]
+
+    def merge(self, new, old):
+        return hc.strictest_config(new, old, self.DEFAULT)
+
+    def test_protected_paths_union(self):
+        m = self.merge({"auto_merge": {"protected_paths": ["A/", "B/"]}},
+                       {"auto_merge": {"protected_paths": ["B/", "C/"]}})
+        self.assertEqual(m["auto_merge"]["protected_paths"], ["A/", "B/", "C/"])
+
+    def test_missing_side_uses_default(self):
+        m = self.merge({"auto_merge": {"protected_paths": []}}, {})
+        self.assertEqual(m["auto_merge"]["protected_paths"], ["D/"])
+        m = self.merge({"auto_merge": {"protected_paths": "x"}}, {"auto_merge": {"protected_paths": ["C/"]}})
+        self.assertEqual(m["auto_merge"]["protected_paths"], ["D/", "C/"])
+
+    def test_auto_merge_enabled_only_if_both(self):
+        for a, b, want in ((True, True, True), (True, False, False), (False, True, False), (True, None, False)):
+            with self.subTest(a=a, b=b):
+                old = {"auto_merge": {"enabled": b}} if b is not None else {}
+                self.assertIs(self.merge({"auto_merge": {"enabled": a}}, old)["auto_merge"]["enabled"], want)
+
+    def test_merge_parked_and_fail_open(self):
+        m = self.merge({"auto_merge": {"merge_parked": True}, "review": {"fail_open": True}},
+                       {"auto_merge": {"merge_parked": False}, "review": {"fail_open": False}})
+        self.assertIs(m["auto_merge"]["merge_parked"], False)
+        self.assertIs(m["review"]["fail_open"], False)
+        m = self.merge({"review": {"fail_open": True}}, {})
+        self.assertIs(m["review"]["fail_open"], True)
+
+    def test_provider_disagreement_means_action(self):
+        self.assertEqual(self.merge({"review": {"provider": None}}, {"review": {"provider": "app"}})["review"]["provider"],
+                         "action")
+        self.assertIsNone(self.merge({"review": {"provider": None}}, {"review": {"provider": None}})["review"]["provider"])
+
+    def test_disagreeing_features_are_disabled(self):
+        m = self.merge({"fast_track": {"enabled": True}, "conflicts": {"auto_resolve": True},
+                        "github": {"default_branch": "develop", "release_branch": "main"}},
+                       {"fast_track": {"enabled": True, "require_ci": False}, "conflicts": {"auto_resolve": True},
+                        "github": {"default_branch": "develop", "release_branch": None}})
+        self.assertIs(m["fast_track"]["enabled"], False)
+        self.assertIs(m["conflicts"]["auto_resolve"], True)  # 一致していれば新パスのまま
+        self.assertIsNone(m["github"]["release_branch"])
+        self.assertEqual(m["github"]["default_branch"], "develop")
+
+    def test_inputs_are_not_modified(self):
+        new = {"auto_merge": {"protected_paths": ["A/"]}}
+        snapshot = json.dumps(new)
+        self.merge(new, {"auto_merge": {"protected_paths": ["B/"]}})
+        self.assertEqual(json.dumps(new), snapshot)
+
+    def test_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            n, o, broken = Path(d) / "n.json", Path(d) / "o.json", Path(d) / "b.json"
+            n.write_text(json.dumps({"auto_merge": {"enabled": True, "protected_paths": ["A/"]}}), encoding="utf-8")
+            o.write_text(json.dumps({"auto_merge": {"enabled": False, "protected_paths": ["B/"]}}), encoding="utf-8")
+            broken.write_text("{ broken", encoding="utf-8")
+            script = WORKER_SCRIPTS / "harness_config.py"
+
+            def run(*args):
+                return subprocess.run([sys.executable, "-I", str(script), "strictest", *map(str, args)],
+                                      capture_output=True, text=True, encoding="utf-8")
+
+            r = run(n, o)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)
+            self.assertEqual(out["auto_merge"]["protected_paths"], ["A/", "B/"])
+            self.assertIs(out["auto_merge"]["enabled"], False)
+            r = run(broken, o)  # 読めない側は無視する
+            self.assertEqual(json.loads(r.stdout)["auto_merge"]["protected_paths"], ["B/"])
+            self.assertEqual(run(broken, broken).returncode, 1)
+
+
+class ResolveConflictsBothConfigsTest(unittest.TestCase):
+    """--config なしの resolve_conflicts.py は、新旧の config が食い違えば自動解消しない。"""
+
+    def make_conflict(self, root: Path) -> None:
+        init_repo(root)
+        write(root, "notes.md", "# notes\n")
+        commit_all(root, "base")
+        git(root, "checkout", "-q", "-b", "other")
+        write(root, "notes.md", "# notes\n- other\n")
+        commit_all(root, "other")
+        git(root, "checkout", "-q", "main")
+        write(root, "notes.md", "# notes\n- main\n")
+        commit_all(root, "main")
+        subprocess.run(["git", "-C", str(root), "merge", "-q", "--no-commit", "other"], capture_output=True)
+
+    def run_main(self, root: Path):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                code = rc.main(["--dry-run"])
+        finally:
+            os.chdir(cwd)
+        return code, json.loads(out.getvalue()), err.getvalue()
+
+    def test_only_new_config_resolves(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, NEW, json.dumps({"conflicts": {"auto_resolve_extensions": [".md"]}}))
+            self.make_conflict(root)
+            code, out, _ = self.run_main(root)
+            self.assertEqual((code, out["resolved"]), (0, ["notes.md"]))
+
+    def test_disagreeing_configs_do_not_resolve(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, NEW, json.dumps({"conflicts": {"auto_resolve_extensions": [".md"]}}))
+            write(root, LEGACY, json.dumps({"conflicts": {"auto_resolve_extensions": [".rst"]}}))
+            self.make_conflict(root)
+            code, out, err = self.run_main(root)
+            self.assertEqual((code, out["unresolved"]), (1, ["notes.md"]))
+            self.assertIn("::warning::", err)
+
+
 class CopiesMatchTest(unittest.TestCase):
     """単独で取り出して実行される policy_gate.py / resolve_conflicts.py は harness_config を写している。"""
 
@@ -92,8 +210,12 @@ class CopiesMatchTest(unittest.TestCase):
             return src
 
         for mod in (pg, rc):
-            with self.subTest(mod=mod.__name__):
-                self.assertEqual(body(mod.choose_config_rel), body(hc.choose_config_rel))
+            for name in ("choose_config_rel", "strictest_config"):
+                with self.subTest(mod=mod.__name__, fn=name):
+                    self.assertEqual(body(getattr(mod, name)), body(getattr(hc, name)))
+
+    def test_default_protected_matches_policy_gate(self):
+        self.assertEqual(hc.DEFAULT_PROTECTED_PATHS, pg.DEFAULT_CORE)
 
     def test_behaviour_matches(self):
         for mod in (pg, rc):

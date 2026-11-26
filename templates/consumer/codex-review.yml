@@ -93,13 +93,26 @@ jobs:
           fi
           git archive "$BASE_SHA" "$HARNESS_REL" | tar -x -C "$dir"
           # base に config が無ければ存在しないパスを渡す(= 既定値)。新パス .claude/orchestration.json を
-          # 優先し、無ければ旧パス .kiro/orchestration/config.json(harness_config.py と同じ順)
-          for c in .claude/orchestration.json .kiro/orchestration/config.json; do
-            if git cat-file -e "$BASE_SHA:$c" 2>/dev/null; then
-              git show "$BASE_SHA:$c" > "$RUNNER_TEMP/harness-config.json"
-              break
-            fi
-          done
+          # 優先し、無ければ旧パス .kiro/orchestration/config.json(harness_config.py と同じ順)。
+          # 両方あれば厳しい側に倒してまとめる(片方を正とすると、もう片方を置くだけで制約を外せるため)
+          new_cfg=.claude/orchestration.json
+          old_cfg=.kiro/orchestration/config.json
+          merge="$dir/$HARNESS_REL/scripts/harness_config.py"
+          if git cat-file -e "$BASE_SHA:$new_cfg" 2>/dev/null && git cat-file -e "$BASE_SHA:$old_cfg" 2>/dev/null \
+              && [ -f "$merge" ]; then
+            echo "::warning::base に $new_cfg と $old_cfg の両方があります。厳しい側の設定でレビューします(どちらかを削除してください)"
+            git show "$BASE_SHA:$new_cfg" > "$RUNNER_TEMP/harness-config-new.json"
+            git show "$BASE_SHA:$old_cfg" > "$RUNNER_TEMP/harness-config-old.json"
+            python3 -I "$merge" strictest "$RUNNER_TEMP/harness-config-new.json" "$RUNNER_TEMP/harness-config-old.json" \
+              > "$RUNNER_TEMP/harness-config.json"
+          else
+            for c in "$new_cfg" "$old_cfg"; do
+              if git cat-file -e "$BASE_SHA:$c" 2>/dev/null; then
+                git show "$BASE_SHA:$c" > "$RUNNER_TEMP/harness-config.json"
+                break
+              fi
+            done
+          fi
           echo "dir=$dir/$HARNESS_REL" >> "$GITHUB_OUTPUT"
           {
             echo "SCRIPTS=$dir/$HARNESS_REL/scripts"

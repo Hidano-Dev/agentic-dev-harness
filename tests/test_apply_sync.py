@@ -146,17 +146,47 @@ class ApplySyncTest(unittest.TestCase):
         self.assertEqual(r["config"], "migrated")
         self.assertFalse((self.target / LEGACY).exists())
 
-    def test_both_paths_prefer_new_and_warn(self):
+    def test_both_paths_abort_without_writing(self):
+        # 旧版のゲートは新パスをコアと見ないので、新パスはエージェントの PR で承認なしに入り得る。
+        # 同期がそれを正として採用・移行しないよう、何も書かずに止めて人間に回す
         legacy_text = (self.target / LEGACY).read_text(encoding="utf-8")
+        new_text = json.dumps(minimal_config()) + "\n"
+        write(self.target / NEW, new_text)
+        commit_all(self.target, "both")
+        with self.assertRaises(SyncError) as cm:
+            self.apply()
+        self.assertIn("両方", str(cm.exception))
+        self.assertIn("削除", str(cm.exception))
+        self.assertEqual((self.target / LEGACY).read_text(encoding="utf-8"), legacy_text)
+        self.assertEqual((self.target / NEW).read_text(encoding="utf-8"), new_text)
+        self.assertFalse((self.target / ".harness/version").exists())
+        self.assertFalse((self.target / ".claude/skills/linear-worker").exists())
+
+    def test_both_paths_cli_reports_error(self):
         write(self.target / NEW, json.dumps(minimal_config()) + "\n")
         commit_all(self.target, "both")
+        with redirect_stderr(io.StringIO()) as err, unittest.mock.patch("sys.stdout", new=io.StringIO()):
+            code = apply_sync.main(["--harness", str(self.harness), "--target", str(self.target),
+                                    "--harness-repo", HARNESS_REPO, "--ref", "main"])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err.getvalue())
+
+    def test_move_is_skipped_while_any_tracked_file_references_legacy_path(self):
+        write(self.target / "tools/deploy.sh", "cat .kiro/orchestration/config.json\n")
+        write(self.target / "docs/ops.md", "設定は `.kiro/orchestration/config.json`\n")
+        commit_all(self.target, "own references")
         r = self.apply()
         self.assertNotIn("config_moved", r)
-        self.assertEqual(r["config"], "migrated")
-        self.assertIn("::warning::", self.stderr)
-        self.assertIn("両方", self.stderr)
-        # 旧パスは触らない(どちらを残すかは人間が決める)
-        self.assertEqual((self.target / LEGACY).read_text(encoding="utf-8"), legacy_text)
+        self.assertTrue((self.target / LEGACY).is_file())
+        self.assertIn("tools/deploy.sh", self.stderr)
+        self.assertIn("docs/ops.md", self.stderr)
+
+    def test_untracked_and_binary_files_do_not_block_move(self):
+        (self.target / "blob.bin").write_bytes(b"\0.kiro/orchestration/config.json")
+        commit_all(self.target, "binary")
+        write(self.target / "scratch.txt", "cat .kiro/orchestration/config.json\n")  # 追跡していない
+        r = self.apply()
+        self.assertIn("config_moved", r)
 
     def test_no_config_is_absent(self):
         os.remove(self.target / LEGACY)

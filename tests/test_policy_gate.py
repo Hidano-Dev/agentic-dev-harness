@@ -173,20 +173,69 @@ class EvaluateTest(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("Assets/Secret/a.txt", "\n".join(r.details))
 
-    def test_new_config_wins_over_legacy(self):
+    def both_configs(self, new_paths, old_paths, **old_github):
         cfg_path = self.repo / ".claude/orchestration.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        cfg["auto_merge"]["protected_paths"] = ["Assets/New/"]
+        cfg["auto_merge"]["protected_paths"] = new_paths
         write(cfg_path, json.dumps(cfg))
-        legacy = dict(cfg, auto_merge={"protected_paths": ["Assets/Old/"]})
+        legacy = dict(cfg, auto_merge={"protected_paths": old_paths},
+                      github={**cfg["github"], **old_github})
         write(self.repo / ".kiro/orchestration/config.json", json.dumps(legacy))
         self.base = commit_all(self.repo, "both configs")
-        self.branch()
-        write(self.repo / "Assets/Old/a.txt", "x\n")
-        with redirect_stderr(io.StringIO()) as err:
-            r = self.evaluate(commit_all(self.repo))
-        self.assertTrue(r.ok, r.reason)  # 旧パスの保護は使わない
-        self.assertIn("::warning::", err.getvalue())
+        return cfg
+
+    def test_both_configs_protect_the_union(self):
+        # 新パスだけを正とすると、保護の無い新パスを置くだけで旧パスの保護が外れる
+        self.both_configs(["Assets/New/"], ["Assets/Old/"])
+        for rel in ("Assets/Old/a.txt", "Assets/New/a.txt"):
+            with self.subTest(rel=rel):
+                self.branch(f"feature/{rel.replace('/', '-')}")
+                write(self.repo / rel, "x\n")
+                with redirect_stderr(io.StringIO()) as err:
+                    r = self.evaluate(commit_all(self.repo))
+                self.assertFalse(r.ok, r.reason)
+                self.assertIn(rel, "\n".join(r.details))
+                self.assertIn("::warning::", err.getvalue())
+                git(self.repo, "checkout", "-q", "develop")
+
+    def test_both_configs_disagreeing_on_release_branch_is_not_release_pr(self):
+        # 新パスだけが 2 段構成(Release PR)を名乗っても、旧パスと食い違えば緩めた判定をしない
+        cfg = self.both_configs([], [], default_branch="develop", release_branch=None)
+        cfg["github"].update({"default_branch": "develop", "release_branch": "main"})
+        write(self.repo / ".claude/orchestration.json", json.dumps(cfg))
+        self.base = commit_all(self.repo, "new path: two-tier")
+        self.branch("release-head")
+        f = self.repo / ".claude/rules/git-workflow.md"
+        write(f, f.read_text(encoding="utf-8") + "\nedit\n")
+        with redirect_stderr(io.StringIO()):
+            r = pg.evaluate(self.repo, self.base, commit_all(self.repo), approval_fn=lambda: (True, "承認"),
+                            sync_verify_fn=lambda: (False, []), base_ref="main", head_ref="develop")
+        self.assertFalse(r.ok, r.reason)  # Release PR なら承認で通るが、配布物の直接編集として失敗する
+        self.assertIn("配布物", r.reason)
+
+    def test_broken_new_config_falls_back_to_legacy(self):
+        cfg_path = self.repo / ".claude/orchestration.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["auto_merge"]["protected_paths"] = ["Assets/Old/"]
+        for broken in ("file", "dir", "array"):
+            with self.subTest(broken=broken):
+                git(self.repo, "checkout", "-q", "develop")
+                git(self.repo, "reset", "-q", "--hard", self.base)
+                write(self.repo / ".kiro/orchestration/config.json", json.dumps(cfg))
+                git(self.repo, "rm", "-q", "--cached", ".claude/orchestration.json")
+                cfg_path.unlink()
+                if broken == "file":
+                    write(cfg_path, "{ broken")
+                elif broken == "dir":
+                    write(cfg_path / "x.json", "{}")
+                else:
+                    write(cfg_path, "[]")
+                base = commit_all(self.repo, f"broken new config ({broken})")
+                git(self.repo, "checkout", "-q", "-b", f"feature/{broken}", base)
+                write(self.repo / "Assets/Old/a.txt", "x\n")
+                r = self.evaluate(commit_all(self.repo), base=base)
+                self.assertFalse(r.ok, r.reason)
+                self.assertIn("Assets/Old/a.txt", "\n".join(r.details))
 
     def test_both_config_paths_are_floor_core(self):
         for rel in (".claude/orchestration.json", ".kiro/orchestration/config.json"):

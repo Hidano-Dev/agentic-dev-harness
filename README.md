@@ -58,7 +58,8 @@ docs/                   … 導入手順・運用メモ(配布されない)
   取り込み側からも削除される。それ以外(自作 skill、`.claude/settings.json`、SDD 一式、
   `.kiro/specs/` `.kiro/steering/`)には触れない。例外として、config を旧パス
   `.kiro/orchestration/config.json` だけに置いているリポジトリは新パス `.claude/orchestration.json` へ移す
-  (空になった `.kiro/orchestration/` は消す。配布物以外が旧パスを参照している間は移さない)
+  (空になった `.kiro/orchestration/` は消す。配布物以外の追跡中のファイルが旧パスを参照している間は移さない。
+  両方あれば同期は失敗する)
 - ルート `CLAUDE.md` はコピーしない。`@.claude/rules/git-workflow.md` の import 行が無ければ
   同期時に末尾へ追記する(それ以外の内容には触れない)
 - config(`.claude/orchestration.json`)の `auto_merge` には、配布元が定義した移行
@@ -73,7 +74,8 @@ docs/                   … 導入手順・運用メモ(配布されない)
 linear-worker(キュー・ゲート・自動マージ)がそれを読む(SDD 導入時は dev-orchestrator も
 確認チャネルを読む)。雛形は `.claude/skills/linear-worker/templates/orchestration-config.json`、
 キーの意味は `linear-worker/SKILL.md` の「設定」節。
-旧パス `.kiro/orchestration/config.json` も読む(新パスが無ければ旧パス、両方あれば新パスを使い警告する。
+旧パス `.kiro/orchestration/config.json` も読む(新パスが無ければ旧パス。両方あればゲートは厳しい側に倒し、
+同期は失敗する。
 解決は `.claude/skills/linear-worker/scripts/harness_config.py`)。
 
 このファイルが無いリポジトリでは、linear-worker は起動せず、git-workflow は

@@ -103,14 +103,6 @@ def choose_config_rel(exists: Callable[[str], bool], warn: Callable[[str], None]
     return None
 
 
-def config_at(repo: Path, rev: str) -> str | None:
-    """rev の config の内容(新パス優先)。どちらも無ければ None。"""
-    rel = choose_config_rel(
-        lambda p: git(repo, "cat-file", "-e", f"{rev}:{p}", check=False).returncode == 0,
-        lambda m: print(m, file=sys.stderr))
-    return show(repo, rev, rel) if rel else None
-
-
 def load_json(text: str | None):
     if text is None:
         return None
@@ -118,6 +110,66 @@ def load_json(text: str | None):
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def strictest_config(new: dict, old: dict, default_protected: list[str]) -> dict:
+    """新旧両方の config があるときの厳しい側に倒した config。harness_config.strictest_config の写し。"""
+    def obj(cfg: dict, key: str) -> dict:
+        value = cfg.get(key)
+        return value if isinstance(value, dict) else {}
+
+    def protected(am: dict) -> list:
+        paths = am.get("protected_paths")
+        if isinstance(paths, list) and all(isinstance(p, str) for p in paths):
+            return list(paths)
+        return list(default_protected)
+
+    merged = json.loads(json.dumps(new))
+    am_new, am_old = obj(new, "auto_merge"), obj(old, "auto_merge")
+    am = dict(am_new)
+    am["protected_paths"] = list(dict.fromkeys(protected(am_new) + protected(am_old)))
+    am["enabled"] = am_new.get("enabled") is True and am_old.get("enabled") is True
+    if am_new.get("merge_parked") is False or am_old.get("merge_parked") is False:
+        am["merge_parked"] = False
+    merged["auto_merge"] = am
+    rv_new, rv_old = obj(new, "review"), obj(old, "review")
+    if rv_new or rv_old:
+        rv = dict(rv_new)
+        if rv_new.get("fail_open") is False or rv_old.get("fail_open") is False:
+            rv["fail_open"] = False
+        if rv_new.get("provider", "action") != rv_old.get("provider", "action"):
+            rv["provider"] = "action"
+        merged["review"] = rv
+    for key, flag in (("fast_track", "enabled"), ("conflicts", "auto_resolve")):
+        if obj(new, key) != obj(old, key):
+            merged[key] = {**obj(new, key), flag: False}
+    if obj(new, "github") != obj(old, "github"):
+        merged["github"] = {**obj(new, "github"), "release_branch": None}
+    return merged
+
+
+def _config_blob(repo: Path, rev: str, rel: str) -> dict | None:
+    """rev の rel がファイル(blob)で JSON オブジェクトならその内容。それ以外は None。"""
+    r = git(repo, "cat-file", "-t", f"{rev}:{rel}", check=False)
+    if r.returncode != 0 or r.stdout.strip() != "blob":
+        return None
+    data = load_json(show(repo, rev, rel))
+    return data if isinstance(data, dict) else None
+
+
+def base_config(repo: Path, rev: str) -> dict | None:
+    """rev の config。新パス優先で、新パスが壊れている(JSON でない・ディレクトリ等)なら旧パスを使う。
+
+    両方が読めるときは strictest_config で厳しい側に倒す(片方だけを正とすると、保護されていない側の
+    ファイルを置く・書き換えるだけで保護パスを外せるため)。どちらも読めなければ None(既定値)。
+    """
+    new = _config_blob(repo, rev, CONFIG_REL)
+    old = _config_blob(repo, rev, LEGACY_CONFIG_REL)
+    if new is not None and old is not None:
+        print(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。保護パスは両方の和集合、"
+              f"その他の設定は厳しい側で判定します(どちらかを削除してください)", file=sys.stderr)
+        return strictest_config(new, old, DEFAULT_CORE)
+    return new if new is not None else old
 
 
 def matches(path: str, prefixes: list[str]) -> bool:
@@ -329,7 +381,7 @@ def evaluate(repo_dir: Path, base: str, head: str, *,
         config = load_json(config_path.read_text(encoding="utf-8")) if config_path.is_file() else None
     else:
         # PR 自身が書き換えた config で保護を外せないよう、base 側の config を使う
-        config = load_json(config_at(repo_dir, base))
+        config = base_config(repo_dir, base)
     core = core_paths(config)
     gh_cfg = config.get("github") if isinstance(config, dict) and isinstance(config.get("github"), dict) else {}
     # Release PR(作業ブランチ → リリースブランチの昇格 PR)。同期の変更と通常の変更がまとめて入るので

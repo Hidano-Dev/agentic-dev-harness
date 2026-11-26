@@ -7,31 +7,39 @@
 
 Kiro(SDD)を使わないリポジトリから `.kiro/` を丸ごと消せるよう、取り込み側の config を
 `.kiro/orchestration/config.json` から `.claude/orchestration.json` へ移す。**旧パスも引き続き読む**
-(新パスが無ければ旧パス、両方あれば新パスを使い warning を出す)。
+(新パスが無ければ旧パス)。両方あるときの扱いは下記(ゲートは厳しい側、同期は失敗)。
 
 - **解決を 1 か所に**: 配布物に `.claude/skills/linear-worker/scripts/harness_config.py`(新規)。
   `CONFIG_REL` / `LEGACY_CONFIG_REL` / `CONFIG_CANDIDATES`、`choose_config_rel(exists, warn)`・
-  `resolve_config_path(root)`。`check_docs_policy.py` `classify_change.py` `migrate_config.py` `release_notes.py`
+  `resolve_config_path(root)`・`strictest_config(new, old, default_protected)`(CLI `harness_config.py strictest`)。
+  `check_docs_policy.py` `classify_change.py` `migrate_config.py` `release_notes.py`
   `review_plan.py` `post_review.py` `review_status.py`(`codex_review_common.py` 経由)と `scripts/sync/` `scripts/onboard/`
   がこれを使う。単独で取り出して実行される `policy_gate.py` `resolve_conflicts.py` は写しを持つ
   (`tests/test_harness_config.py` が一致を検査する)。`--config` を省いたときの既定が「新パス、無ければ旧パス」になる
+- **両方あるとき**: 片方だけを正とすると、保護されていない側のファイルを置く・書き換えるだけで制約を外せるため、
+  ゲートは厳しい側に倒す。`policy_gate.py` は保護パスを両方の和集合にし、`github` が食い違えば Release PR として
+  扱わない。`codex-review.yml` は `strictest_config` でまとめた config でレビューし(`auto_merge.enabled` は両方 true の
+  ときだけ、`review.fail_open` はどちらかが false なら false 等)、`conflict-sweeper.yml` と `resolve_conflicts.py` は
+  自動解消しない(設定が食い違うとき)。新パスが JSON として読めない・ファイルでないときは旧パスを使う(policy_gate)。
+  その他のスクリプトは新パスを使い warning を出す
 - **ワークフロー**: `codex-review.yml` `conflict-sweeper.yml` `promote.yml` も新パス → 旧パスの順で読む
   (Harness Sync で更新される)
 - **移動**: `apply_sync.py`(Harness Sync)が、旧パスだけに config があるリポジトリの config を新パスへ移す
   (空になった `.kiro/orchestration/`・`.kiro/` を消す。`.kiro/specs/` などの他の中身には触れない)。次のときは移さない:
-  - 配布物以外のファイル(`.claude/` `.kiro/` の下。SDD の dev-orchestrator など)が旧パスを参照している
-    (dev-orchestrator が `confirmation_channel` を見失わないように)。参照を直せば次の同期で移る
+  - 配布物・配布ワークフロー以外の追跡中のテキストファイル(SDD の dev-orchestrator、リポジトリ独自のスクリプト・
+    CI・CLAUDE.md などの文書)が旧パスを参照している。notice で該当ファイルを列挙する。参照を直せば次の同期で移る
+  - 新パスが取り込み側の `.gitignore` で除外されている
   - 同期前の `policy_gate.py` が新パスを知らない(移動を含む同期 PR が base 側のゲートで「同期の範囲外」になり、
     人間の承認待ちになるため)。この版を取り込む最初の同期では移さず、**次の同期で移す**
+- **同期の失敗**: 新旧両方の config があると、`apply_sync.py` は何も書かずに失敗する(どちらかを消してから再実行する)
 - **保護**: config 移行 `2026-11-26-protect-claude-orchestration-config` が `auto_merge.protected_paths` に
   `.claude/orchestration.json` を足す(`.claude/` などで覆われていれば何もしない)。`.kiro/orchestration/` は
   旧パスで動くリポジトリのために残す。`policy_gate.py` の既定のコア・常にコアとするパス・同期 PR の範囲にも新旧両方を入れた
 - **オンボーディング**: `bootstrap_target.py` は新パスに config を作る(旧パスに既存の config があればそれを使う)
 - 本リポジトリ自身の config も `.claude/orchestration.json` へ移した
-  - 新パスが取り込み側の `.gitignore` で除外されている
 - **取り込み側で必要な作業: なし**(同期で自動的に移る。待たずに移すなら `git mv .kiro/orchestration/config.json
-  .claude/orchestration.json` だけでよい。その PR はコアの変更なので人間の承認が要る)。SDD を使うリポジトリは、
-  dev-orchestrator が新パスを読めるようになるまで旧パスのままにする
+  .claude/orchestration.json` だけでよい。その PR はコアの変更なので人間の承認が要る)。旧パスを参照する独自のファイルが
+  あるリポジトリ(SDD の dev-orchestrator を含む)は、参照を直すまで旧パスのまま動く
 
 ## 2026-11-01 — 待機・判定・マージを GitHub 側へ移し、develop / main の 2 段構成にする
 

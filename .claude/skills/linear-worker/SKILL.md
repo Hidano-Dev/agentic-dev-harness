@@ -28,8 +28,9 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 `.claude/orchestration.json` を読み、次のキーを使う(雛形:
 `templates/orchestration-config.json`。SDD 導入時は dev-orchestrator の `confirmation_channel` と
 同じファイルに同居する)。旧パス `.kiro/orchestration/config.json` も読む: 新パスが無ければ旧パスを使い、
-両方あれば新パスを使う(解決は `scripts/harness_config.py`。旧パスだけのリポジトリは Harness Sync が
-新パスへ移す。SDD の dev-orchestrator など配布物以外が旧パスを参照している間は移さない)。**ファイルが無い・`linear.team` が無い場合は何も着手せず、
+両方あれば新パスを使う(ゲートは両方を厳しい側に倒して使い、Harness Sync は失敗する。どちらかを消すこと。
+解決は `scripts/harness_config.py`。旧パスだけのリポジトリは Harness Sync が新パスへ移す。
+配布物以外の追跡中のファイルが旧パスを参照している間は移さない)。**ファイルが無い・`linear.team` が無い場合は何も着手せず、
 「harness 設定なし」と報告して終了する**(対象キューが特定できないまま動かない)。
 
 | キー | 意味 | 既定 |

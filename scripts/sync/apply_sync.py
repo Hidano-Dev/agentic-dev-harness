@@ -16,12 +16,13 @@
 5. config を旧パス `.kiro/orchestration/config.json` だけに置いているリポジトリは新パス
    `.claude/orchestration.json` へ移す(空になった `.kiro/orchestration/`・`.kiro/` は消す。`.kiro/` の
    他の中身には触れない)。ただし次のときは移さない(旧パスのままでも動く):
-   - 配布物以外のファイル(SDD の dev-orchestrator など)が旧パスを参照している
+   - 配布物・配布ワークフロー以外の追跡中のファイル(SDD の dev-orchestrator・CLAUDE.md など)が旧パスを参照している
    - 新パスが取り込み側の .gitignore で除外されている
    - 同期前の policy_gate.py が新パスを知らない(同期 PR の検証は base 側の policy_gate.py が行うので、
      新パスへの移動は「同期の範囲外」として人間の承認待ちになる)。この同期で新しい policy_gate.py が
      入るので、次の同期で移す
-   両方のパスにあれば新パスを使い、warning を出す(どちらも消さない)。
+   両方のパスにあれば何も書かずに同期を失敗させる(どちらを正とするかは人間が決める。旧版のゲートは
+   新パスをコアと見ないので、新パスはエージェントの PR で人間の承認なしに入り得る。それを正にしないため)。
    その config を JSON として検査し(不正なら中止、雛形のプレースホルダが残っていれば warning)、
    配布元の migrate_config.py を適用する
 6. `.harness/version`(JSON: repo / ref / sha / owned)を書く
@@ -233,36 +234,44 @@ def ensure_claude_md(target: Path, import_line: str) -> str:
     return "appended"
 
 
-def _mentions_legacy_config(target: Path, owned: list[str]) -> list[str]:
-    """配布物以外で旧パスの config を参照しているファイル(`.claude/` `.kiro/` の下だけを見る)。
+def _tracked_files(target: Path) -> list[str]:
+    """取り込み側の追跡中のファイル(git リポジトリでなければ .git 以外の全ファイル)。"""
+    if is_git_repo(target):
+        out = run_git(target, "ls-files", "-z").stdout
+        return sorted(p for p in out.split("\0") if p)
+    files = []
+    for dirpath, dirnames, filenames in os.walk(target, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        files += [(Path(dirpath) / n).relative_to(target).as_posix() for n in filenames]
+    return sorted(files)
+
+
+def _mentions_legacy_config(target: Path, skip: list[str]) -> list[str]:
+    """旧パスの config を参照している追跡中のテキストファイル(skip = 配布物・配布ワークフロー)。
 
     SDD(unity-sdd-kit)の dev-orchestrator は旧パスの config の confirmation_channel を読む。
-    これを移すと dev-orchestrator が設定を見失うので、参照が残っている間は移さない。
+    リポジトリ独自のスクリプト・CI・文書が旧パスを読んでいることもある。移すとそれらが設定を
+    見失うので、参照が残っている間は移さない。
     """
     needle = LEGACY_CONFIG_REL.encode("utf-8")
+    skip_set = set(skip)
     hits: list[str] = []
-    for top in (".claude", ".kiro"):
-        base = target / top
-        if not base.is_dir() or base.is_symlink():
+    for rel in _tracked_files(target):
+        if rel in (LEGACY_CONFIG_REL, CONFIG_REL) or under(rel, skip_set):
             continue
-        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-            dirnames.sort()
-            for n in sorted(filenames):
-                full = Path(dirpath) / n
-                rel = full.relative_to(target).as_posix()
-                if rel in (LEGACY_CONFIG_REL, CONFIG_REL) or under(rel, set(owned)) or full.is_symlink():
-                    continue
-                try:
-                    if full.stat().st_size > 1_000_000:
-                        continue
-                    if needle in full.read_bytes():
-                        hits.append(rel)
-                except OSError:
-                    continue
+        full = target / rel
+        try:
+            if full.is_symlink() or not full.is_file() or full.stat().st_size > 1_000_000:
+                continue
+            data = full.read_bytes()
+        except OSError:
+            continue
+        if b"\0" not in data and needle in data:  # NUL を含むものはバイナリとして見ない
+            hits.append(rel)
     return hits
 
 
-def plan_config_move(target: Path, owned: list[str]) -> tuple[str, str]:
+def plan_config_move(target: Path, skip: list[str]) -> tuple[str, str]:
     """旧パスの config を新パスへ移すか。戻り値: (判定, 理由)。判定は move / keep / none。
 
     配布物をコピーする前(同期前の policy_gate.py が残っているうち)に呼ぶ。
@@ -270,7 +279,7 @@ def plan_config_move(target: Path, owned: list[str]) -> tuple[str, str]:
     new, old = (target / CONFIG_REL), (target / LEGACY_CONFIG_REL)
     if not old.is_file() or new.exists() or new.is_symlink():
         return "none", ""
-    refs = _mentions_legacy_config(target, owned)
+    refs = _mentions_legacy_config(target, skip)
     if refs:
         return "keep", (f"{', '.join(refs)} が旧パス {LEGACY_CONFIG_REL} を参照しているため、config を移さず"
                         f"旧パスのまま使います(参照を新パス {CONFIG_REL} に直すと次回の同期で移します)")
@@ -387,8 +396,14 @@ def apply_sync(harness: Path, target: Path, sha: str | None = None,
             if hits:
                 raise SyncError(f"配布元の {rel} にシンボリックリンクがある(配布できない): {', '.join(hits)}")
 
+        # 新旧両方の config があれば、どちらを正とするかは人間が決める(旧版のゲートは新パスをコアと見ないので、
+        # 新パスはエージェントの PR で承認なしに入り得る。同期がそれを正として採用しないよう止める)
+        if (target / CONFIG_REL).exists() and (target / LEGACY_CONFIG_REL).exists():
+            raise SyncError(
+                f"{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方がある。どちらを正とするか決めて、"
+                f"どちらかを削除してから再実行すること(同期は config の移行も新パスの採用もしない)")
         # config の移動は、同期前の policy_gate.py を見て決めるので配布物のコピーより前に判定する
-        move, move_reason = plan_config_move(target, owned)
+        move, move_reason = plan_config_move(target, list(owned) + list(workflows.values()))
 
         result: dict = {"sha": full_sha, "ref": ref, "repo": harness_repo,
                         "owned": [], "workflows": [], "removed": []}
