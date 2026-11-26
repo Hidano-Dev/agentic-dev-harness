@@ -347,10 +347,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--result", help="Codex の出力 JSON(--kind review)")
     ap.add_argument("--pr", type=int)
     ap.add_argument("--repo")
-    ap.add_argument("--config", default=str(common.CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {common.CONFIG_REL}、無ければ旧 {common.LEGACY_CONFIG_REL})")
     ap.add_argument("--reason", default="", help="コメントに添える理由(skip / unavailable)")
     ap.add_argument("--dry-run", action="store_true", help="投稿せず内容を出力する")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(common.resolve_config_path())
 
     if a.check_result:
         try:

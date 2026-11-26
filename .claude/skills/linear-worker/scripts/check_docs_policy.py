@@ -8,7 +8,7 @@
 
 - 呼び出し元: 取り込み側の CI(templates/consumer/docs-policy.yml)と、linear-worker の
   一次ゲート(SKILL.md §4 手順 1)
-- `.kiro/orchestration/config.json` が無い・`linear.team` が無いリポジトリは対象外
+- config(`.claude/orchestration.json`。旧 `.kiro/orchestration/config.json` も読む)が無い・`linear.team` が無いリポジトリは対象外
   (記録先の Linear が無いため)。何もせず成功する
 - 対象パスは config の `docs.aggregate_paths`(無ければ既定値)。`/` で終わる値は
   ディレクトリ接頭辞、それ以外は完全一致。空配列ならこの検査を無効にする
@@ -25,7 +25,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# `python3 -I` ではスクリプトのディレクトリが sys.path に入らないので足してから読む
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, resolve_config_path  # noqa: E402
 # SKILL.md 設定表の既定値。キーが無い config ではこれを使う
 DEFAULT_AGGREGATE_PATHS = ["README.md", "CHANGELOG.md", "docs/backlog.md"]
 DEFAULT_RELEASE_BRANCH_PREFIX = "release/"
@@ -76,13 +78,15 @@ def changed_files(base: str, head: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", default=str(CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--base", required=True, help="比較元(PR のベース SHA、または origin/<default_branch>)")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--head-ref", default="", help="PR のヘッドブランチ名")
     ap.add_argument("--base-ref", default="", help="PR のベースブランチ名(Release PR の判定に使う)")
     ap.add_argument("--labels-json", default="[]", help="PR のラベル名の JSON 配列")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(resolve_config_path())
 
     try:
         policy = load_policy(Path(a.config))

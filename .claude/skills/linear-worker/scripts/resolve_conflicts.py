@@ -41,8 +41,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# config の置き場所。harness_config.py と同じ(conflict-sweeper がこのファイルだけを取り出して実行するので
+# import せず写している。tests/test_harness_config.py が一致を検査する)
+CONFIG_REL = ".claude/orchestration.json"
+LEGACY_CONFIG_REL = ".kiro/orchestration/config.json"
 # .txt は requirements.txt / CMakeLists.txt のような依存・ビルド定義と区別できないので既定に含めない
 DEFAULT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc"]
 # 拡張子の設定にかかわらず自動解消しないファイル名(依存・ビルド定義とエージェントへの指示)。
@@ -69,6 +73,19 @@ M_THEIRS = b">" * MARKER_SIZE
 
 class ResolveError(Exception):
     pass
+
+
+def choose_config_rel(exists: Callable[[str], bool], warn: Callable[[str], None] | None = None) -> str | None:
+    """存在する config の相対パス(新パス優先)。どちらも無ければ None。harness_config.choose_config_rel の写し。"""
+    new, old = exists(CONFIG_REL), exists(LEGACY_CONFIG_REL)
+    if new and old and warn is not None:
+        warn(f"::warning::{CONFIG_REL} と {LEGACY_CONFIG_REL} の両方があります。{CONFIG_REL} を使います"
+             f"(旧パスのファイルは削除してください)")
+    if new:
+        return CONFIG_REL
+    if old:
+        return LEGACY_CONFIG_REL
+    return None
 
 
 def git(args: list[str], cwd: Path, *, input: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -292,7 +309,7 @@ def try_resolve(root: Path, path: str, stages: dict[int, tuple[str, str]], setti
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", default=None, help=f"設定ファイル(既定: リポジトリ直下の {CONFIG_REL.as_posix()})")
+    ap.add_argument("--config", default=None, help=f"設定ファイル(既定: リポジトリ直下の {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--dry-run", action="store_true", help="判定だけ行い、ファイルの書き込み・git add をしない")
     a = ap.parse_args(argv)
     # JSON は機械が読むので、端末のコードページ(Windows の cp932 等)によらず UTF-8 で出す
@@ -303,7 +320,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         top = git(["rev-parse", "--show-toplevel"], Path.cwd()).stdout.decode().strip()
         root = Path(top)
-        settings = load_settings(Path(a.config) if a.config else root / CONFIG_REL)
+        if a.config:
+            config = Path(a.config)
+        else:
+            rel = choose_config_rel(lambda p: (root / p).is_file(), lambda m: print(m, file=sys.stderr))
+            config = root / (rel or CONFIG_REL)
+        settings = load_settings(config)
         settings["owned"] = harness_owned(root)
         resolved: list[str] = []
         unresolved: list[str] = []

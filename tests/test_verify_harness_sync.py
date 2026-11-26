@@ -66,7 +66,7 @@ class VerifyHarnessSyncTest(unittest.TestCase):
 
     def test_tampered_config_fails(self):
         self.sync_branch()
-        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg_path = self.repo / ".claude/orchestration.json"  # 同期で旧パスから移っている
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         cfg["auto_merge"]["protected_paths"] = []
         write(cfg_path, json.dumps(cfg, indent=2) + "\n")

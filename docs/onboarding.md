@@ -80,8 +80,9 @@
 2. **対象リポジトリ**: 配布物(`.claude/skills/linear-worker` `.claude/rules/git-workflow.md`)をコピー、
    `.github/workflows/harness-sync.yml` と `.github/workflows/docs-policy.yml`(集約型ドキュメントを
    リリース用 PR 以外で変更していたら失敗させる)を配置(旧版があれば配布版に差し替える)、ルート `CLAUDE.md` に
-   `@.claude/rules/git-workflow.md` を保証、`.kiro/orchestration/config.json` を雛形から
-   生成(`auto_merge.enabled` は true)→ `chore: onboard agentic-dev-harness` として PR を作成。
+   `@.claude/rules/git-workflow.md` を保証、config `.claude/orchestration.json` を雛形から
+   生成(`auto_merge.enabled` は true。旧パス `.kiro/orchestration/config.json` に既存の config があれば
+   それを使い、生成しない)→ `chore: onboard agentic-dev-harness` として PR を作成。
    SDD 一式(`.claude/commands/kiro` 等)・`AGENTS.md`・unity-sdd-template 生成先の
    `orchestration-sync.yml` には触れない
 3. **台帳**: `registry/repos.yaml` にエントリを追加して本リポジトリにコミット
@@ -183,7 +184,7 @@ develop の作成・既定ブランチの変更・branch protection も行い、
 - ワーカーが `needs-human` を付けて駐機した Issue は、判断を Issue コメントで返す。
   ラベルは再開したワーカーが外すので手で外さなくてよい(外すと通常の選定対象に戻る)
 - コア(config の `auto_merge.protected_paths`。既定 `.github/` `.harness/` `.kiro/orchestration/` `.kiro/settings/`
-  `.claude/settings.json` `.codex/`)を変える PR は、人間が Approve するまで `policy-gate` が通さない。
+  `.claude/settings.json` `.codex/` `.claude/orchestration.json`)を変える PR は、人間が Approve するまで `policy-gate` が通さない。
   `CLAUDE.md` `AGENTS.md` などの指示文は、`codex-review` と不変条件(`.harness/invariants.json`)を通れば
   develop へ自動マージされる(2026-11-01 の段階化。既存リポジトリの config も同期時の移行で切り替わる)。
   人間は Release PR でまとめて確認する
@@ -198,7 +199,8 @@ PAT を用意できない等の理由で Onboard Repository を使えない場�
    `@.claude/rules/git-workflow.md` の追記まで行われる)
 2. ルート `CLAUDE.md` に `@.claude/rules/git-workflow.md` の行が入ったことを確認する
 3. `.claude/skills/linear-worker/templates/orchestration-config.json` を
-   `.kiro/orchestration/config.json` にコピーして値を埋める(ローカルで
+   `.claude/orchestration.json` にコピーして値を埋める(旧パス `.kiro/orchestration/config.json` も読むが、
+   新しく置くなら新パス。ローカルで
    `python3 scripts/onboard/render_config.py --repo owner/name --team <チーム> --out <path>` でも生成できる)
 4. Linear にリポジトリ名のプロジェクトとラベル 2 つを作る
 5. `registry/repos.yaml` にエントリを追記して PR を出す

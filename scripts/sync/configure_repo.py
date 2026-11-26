@@ -38,6 +38,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "skills" / "linear-worker" / "scripts"))
+from harness_config import CONFIG_CANDIDATES  # noqa: E402
 
 HARNESS_CHECKS = ["codex-review", "policy-gate", "aggregate-docs"]
 # GitHub Actions(GitHub App "github-actions")の app_id。Actions のチェックをこの App に限定する
@@ -50,7 +54,6 @@ HARNESS_CHECK_WORKFLOWS = {
     "aggregate-docs": ".github/workflows/docs-policy.yml",
 }
 DEVELOP = "develop"
-CONFIG_REL = ".kiro/orchestration/config.json"
 PR_TRIGGER_RE = re.compile(r"\bpull_request\b")
 
 
@@ -192,7 +195,12 @@ def with_checks(status: dict | None, add_actions: list[str], add_any: list[str] 
 
 
 def read_unity_ci_workflow(gh, repo: str, ref: str) -> str | None:
-    c = get_or_none(gh, f"/repos/{repo}/contents/{CONFIG_REL}?ref={urllib.parse.quote(ref)}")
+    # config は新パス優先・無ければ旧パス(harness_config.CONFIG_CANDIDATES の順)
+    c = None
+    for rel in CONFIG_CANDIDATES:
+        c = get_or_none(gh, f"/repos/{repo}/contents/{rel}?ref={urllib.parse.quote(ref)}")
+        if c:
+            break
     if not c or "content" not in c:
         return None
     try:

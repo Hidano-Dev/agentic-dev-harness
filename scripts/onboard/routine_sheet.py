@@ -50,7 +50,7 @@ def render(a: argparse.Namespace, result: dict | None) -> str:
             "created": "生成",
             "exists": "既存のため変更なし(値は手で確認すること)",
         }
-        out.append(f"- `.kiro/orchestration/config.json`: {cfg.get(result.get('config'), result.get('config'))}")
+        out.append(f"- `{result.get('config_path') or '.claude/orchestration.json'}`: {cfg.get(result.get('config'), result.get('config'))}")
     if a.pr_url:
         out.append(f"- 対象リポジトリへの PR: {a.pr_url}")
     elif a.pushed_to:

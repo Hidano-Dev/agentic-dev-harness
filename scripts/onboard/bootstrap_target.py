@@ -15,7 +15,8 @@ Onboard Repository ワークフローが、対象リポジトリを `target/` �
    - 既に agentic-dev-harness の docs-policy.yml があれば配布版に差し替える。
      同名の無関係なファイルなら中止する
 4. ルート CLAUDE.md に `@.claude/rules/git-workflow.md` を保証
-5. `.kiro/orchestration/config.json` を生成(既にあれば触らない)。`linear.project` はリポジトリ名
+5. config `.claude/orchestration.json` を生成(既にあれば触らない。旧パス `.kiro/orchestration/config.json`
+   にあればそれを既存の config として扱う)。`linear.project` はリポジトリ名
 
 SDD ワークフロー(kiro commands / dev-orchestrator / AGENTS.md 等)は本ハーネスに含まれない。
 必要なら unity-sdd-kit を別途導入する。
@@ -33,6 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from render_config import TEMPLATE_REL, project_name, render  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".claude" / "skills" / "linear-worker" / "scripts"))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, choose_config_rel  # noqa: E402
+
 IMPORT_LINE = "@.claude/rules/git-workflow.md"
 # harness が所有・配布するパス。templates/consumer/harness-sync.yml の SYNC_PATHS と揃える
 ASSET_PATHS = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md"]
@@ -40,7 +44,8 @@ SYNC_TEMPLATE = Path("templates/consumer/harness-sync.yml")
 SYNC_DEST = Path(".github/workflows/harness-sync.yml")
 DOCS_POLICY_TEMPLATE = Path("templates/consumer/docs-policy.yml")
 DOCS_POLICY_DEST = Path(".github/workflows/docs-policy.yml")
-CONFIG_DEST = Path(".kiro/orchestration/config.json")
+CONFIG_DEST = Path(CONFIG_REL)
+LEGACY_CONFIG_DEST = Path(LEGACY_CONFIG_REL)
 
 CLAUDE_MD_NEW = f"""<!--
   Git 運用ルール(Linear 駆動の自律ワーカー linear-worker への入口を含む)は
@@ -162,19 +167,26 @@ def ensure_claude_md(target: Path) -> str:
     return "appended"
 
 
+def config_rel(target: Path) -> Path:
+    """既存の config(新パス優先、無ければ旧パス)。どちらも無ければ新しく作る新パス。"""
+    rel = choose_config_rel(lambda p: (target / p).is_file(), lambda m: print(m, file=sys.stderr))
+    return Path(rel) if rel else CONFIG_DEST
+
+
 def check_existing_config_identity(target: Path, repo: str, default_branch: str) -> None:
     """既存 config.json の github.repo / default_branch が対象と一致することを確認する。
 
     別リポジトリからコピーした config や既定ブランチ変更前の config を再利用すると、
     ワーカーが別リポジトリ・存在しないブランチを向くので、何も変更する前に止める。
     """
-    dest = target / CONFIG_DEST
+    rel = config_rel(target)
+    dest = target / rel
     if not dest.exists():
         return
     try:
         cfg = json.loads(dest.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"{CONFIG_DEST} が JSON として不正: {e}。修正してから再実行すること") from e
+        raise RuntimeError(f"{rel.as_posix()} が JSON として不正: {e}。修正してから再実行すること") from e
     gh = cfg.get("github", {}) if isinstance(cfg, dict) else {}
     mismatches = []
     if gh.get("repo") != repo:
@@ -183,7 +195,7 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
         mismatches.append(f"github.default_branch: config={gh.get('default_branch')!r} / 対象={default_branch!r}")
     if mismatches:
         raise RuntimeError(
-            f"既存の {CONFIG_DEST} が対象リポジトリと一致しない: " + "; ".join(mismatches)
+            f"既存の {rel.as_posix()} が対象リポジトリと一致しない: " + "; ".join(mismatches)
             + "。config を修正してから再実行すること"
         )
     # linear.team は linear-worker の必須設定であり、台帳登録にも使う。空のまま先へ進むと
@@ -192,21 +204,21 @@ def check_existing_config_identity(target: Path, repo: str, default_branch: str)
     team = linear.get("team")
     if not isinstance(team, str) or not team.strip():
         raise RuntimeError(
-            f"既存の {CONFIG_DEST} に linear.team が無い(または空)。config を修正してから再実行すること"
+            f"既存の {rel.as_posix()} に linear.team が無い(または空)。config を修正してから再実行すること"
         )
     # ラベル名は linear-worker が実値をそのまま読むため、空・前後空白付きの値は
     # (台帳や Linear 側だけ正規化しても食い違うので)config 側の修正を求める
     for key, value in (linear.get("labels") or {}).items():
         if not isinstance(value, str) or not value.strip() or value != value.strip():
             raise RuntimeError(
-                f"既存の {CONFIG_DEST} の linear.labels.{key} が不正({value!r}: 空、または前後に空白)。"
+                f"既存の {rel.as_posix()} の linear.labels.{key} が不正({value!r}: 空、または前後に空白)。"
                 "config を修正してから再実行すること"
             )
 
 
 def effective_config(target: Path) -> dict:
     """config.json の実値のうち台帳・Linear 準備に使う項目(team / project / labels)を返す。"""
-    cfg = json.loads((target / CONFIG_DEST).read_text(encoding="utf-8"))
+    cfg = json.loads((target / config_rel(target)).read_text(encoding="utf-8"))
     linear = cfg.get("linear") or {}
     labels = linear.get("labels") or {}
     # ラベル名が欠落・空なら SKILL.md の既定値に正規化する(空名を台帳や Linear に流さない)
@@ -220,7 +232,7 @@ def effective_config(target: Path) -> dict:
 
 def write_config(harness: Path, target: Path, a: argparse.Namespace) -> str:
     assert_regular_dest(target, CONFIG_DEST)
-    dest = target / CONFIG_DEST
+    dest = target / config_rel(target)
     if dest.exists():
         # 既存 config は変更しない。台帳にはフォーム入力ではなく既存 config の実値を載せるので、
         # 食い違いは警告して知らせる(直したければ config を編集して再実行)。
@@ -276,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         # 書き込み先の事前検査(コピー前に全部見る: 途中で失敗して半端な状態を残さない)
-        for rel in (Path("CLAUDE.md"), CONFIG_DEST, SYNC_DEST, DOCS_POLICY_DEST):
+        for rel in (Path("CLAUDE.md"), CONFIG_DEST, LEGACY_CONFIG_DEST, SYNC_DEST, DOCS_POLICY_DEST):
             assert_regular_dest(target, rel)
         check_existing_config_identity(target, a.repo, a.default_branch)
         result: dict = {}
@@ -285,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         result["docs_policy_workflow"] = place_docs_policy_workflow(harness, target)
         result["claude_md"] = ensure_claude_md(target)
         result["config"] = write_config(harness, target, a)
+        result["config_path"] = config_rel(target).as_posix()
         # 台帳に載せる実値(新規生成でも既存でも config.json から読む)
         result["effective"] = effective_config(target)
     except RuntimeError as e:

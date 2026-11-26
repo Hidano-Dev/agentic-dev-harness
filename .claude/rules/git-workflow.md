@@ -3,11 +3,11 @@
 作業開始からマージまでの Git 運用ルール。
 
 Linear 連携・自動マージ・ブランチ構成など「リポジトリごとに有無が変わる」項目は
-`.kiro/orchestration/config.json`(雛形: `.claude/skills/linear-worker/templates/orchestration-config.json`)
-の設定で切り替える。ファイルが無いリポジトリでは Linear 連携なし・自動マージなし・単一ブランチ運用として扱う。
+`.claude/orchestration.json`(雛形: `.claude/skills/linear-worker/templates/orchestration-config.json`)
+の設定で切り替える。旧パス `.kiro/orchestration/config.json` も読む(新パスが無ければ旧パス、両方あれば新パス)。ファイルが無いリポジトリでは Linear 連携なし・自動マージなし・単一ブランチ運用として扱う。
 
 - Linear をタスクキューとする自律運用(定期実行)は `.claude/skills/linear-worker/SKILL.md` に従う。
-  対象チーム・ラベル・自動マージ可否などリポジトリ固有の値は `.kiro/orchestration/config.json` に置き、
+  対象チーム・ラベル・自動マージ可否などリポジトリ固有の値は `.claude/orchestration.json` に置き、
   スキル本文には書かない。
 - 本文中の dev-orchestrator / `/kiro:*` / `.kiro/specs/` に関する規定は、SDD ワークフロー
   ([unity-sdd-kit](https://github.com/Hidano-Dev/unity-sdd-kit))が導入されているリポジトリでのみ適用する。
@@ -172,7 +172,7 @@ config の `auto_merge.enabled` が true のリポジトリでは、次をすべ
 **`policy-gate` が人間の承認を求める変更**(保護の段階化、2026-11-01 決定):
 
 - **コア**(config の `auto_merge.protected_paths`。既定 `.github/` `.harness/` `.kiro/orchestration/`
-  `.kiro/settings/` `.claude/settings.json` `.codex/`)= ゲート・権限・CI・この config を変える変更。
+  `.kiro/settings/` `.claude/settings.json` `.codex/` `.claude/orchestration.json`)= ゲート・権限・CI・この config を変える変更。
   現在ヘッドに対する人間の Approve が無ければ `policy-gate` が失敗し、マージされない。
   エージェントが自分の制約を自分で緩めないための仕組みで、エージェントはこれを迂回しない。
 - **配布物**(`sync-manifest.json` の `owned`。`.claude/skills/linear-worker/` `.claude/rules/git-workflow.md` 等)を

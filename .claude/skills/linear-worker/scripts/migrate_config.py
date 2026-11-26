@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`.kiro/orchestration/config.json` に配布元の設定変更を移行として適用する。
+"""config(`.claude/orchestration.json`。旧 `.kiro/orchestration/config.json`)に配布元の設定変更を移行として適用する。
 
 取り込み側の Harness Sync(templates/consumer/harness-sync.yml)が配布物のコピー後に呼ぶ。
 config.json は同期でコピーされない(リポジトリ固有の値を持つ)ため、雛形の既定値を
@@ -13,6 +13,8 @@ config.json は同期でコピーされない(リポジトリ固有の値を持�
   決めた値を同期が書き換えない
 - 対象は `auto_merge` / `review.provider` / `github.release_branch`。挙動を緩める移行
   (保護パスの段階化など)は、配布元の Release PR で人間が承認したものだけを足す
+- ファイルの置き場所の移動(旧パス → 新パス)はこのスクリプトではなく apply_sync.py が行う。
+  保護パスの `.kiro/orchestration/` は旧パスで動くリポジトリのために残す
 標準ライブラリのみ使用(ランナー・ローカルどちらでも動く)。
 """
 from __future__ import annotations
@@ -22,7 +24,9 @@ import json
 import sys
 from pathlib import Path
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# `python3 -I` ではスクリプトのディレクトリが sys.path に入らないので足してから読む
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, resolve_config_path  # noqa: E402
 # SKILL.md 設定表の既定値。キーが無い config ではワーカーがこれを使う
 DEFAULT_PROTECTED_PATHS = [".claude/", ".github/", ".kiro/settings/"]
 # ワーカーの行動制約を書いた指示ファイル・Codex 向けの skill / エージェント定義(2026-10-02 に保護対象へ追加)
@@ -101,6 +105,19 @@ INSTRUCTION_PATHS = [".claude/", "CLAUDE.md", "AGENTS.md", ".agents/"]
 CORE_PROTECTED_PATHS = [
     ".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/",
 ]
+# config の新しい置き場所(2026-11-26)。CORE_PROTECTED_PATHS は段階化の移行の定義なので変えず、別の移行で足す
+CONFIG_PROTECTED_PATH = CONFIG_REL
+
+
+def _covered(path: str, paths: list) -> bool:
+    """path が protected_paths のいずれか(ディレクトリ接頭辞、またはファイルそのもの)で覆われているか。"""
+    for p in paths:
+        if not isinstance(p, str):
+            continue
+        q = p.rstrip("/")
+        if q and (path == q or path.startswith(q + "/")):
+            return True
+    return False
 
 
 def review_provider_action(cfg: dict) -> str | None:
@@ -150,6 +167,27 @@ def protected_core_tiering(cfg: dict) -> str | None:
             f"追加: {', '.join(added) or 'なし'})")
 
 
+def protect_claude_orchestration(cfg: dict) -> str | None:
+    """config の新しい置き場所 `.claude/orchestration.json` を protected_paths に足す。
+
+    段階化(2026-11-01)で `.claude/` を保護から外したため、新パスは既定では覆われない。config 自体を
+    変える PR が自動マージされないよう追加する。旧パスの `.kiro/orchestration/` は残す
+    (旧パスで動くリポジトリ・移動の途中の PR を守るため)。`.claude/` 等ですでに覆われていれば何もしない。
+    """
+    am = _auto_merge(cfg)
+    paths = am.get("protected_paths")
+    if paths is None:
+        # キーが無い = 既定値で動いている。追加分だけ書くと既定の保護が外れるので既定ごと書く
+        am["protected_paths"] = list(CORE_PROTECTED_PATHS) + [CONFIG_PROTECTED_PATH]
+        return f"auto_merge.protected_paths をコアパスの既定 + {CONFIG_PROTECTED_PATH} に設定"
+    if not isinstance(paths, list):
+        raise NotApplicable("auto_merge.protected_paths が配列ではない")
+    if _covered(CONFIG_PROTECTED_PATH, paths):
+        return None
+    am["protected_paths"] = paths + [CONFIG_PROTECTED_PATH]
+    return f"auto_merge.protected_paths に {CONFIG_PROTECTED_PATH} を追加"
+
+
 def branch_model_keys(cfg: dict) -> str | None:
     """github.release_branch を明示する。既存リポジトリは null(単一ブランチ運用のまま)。
 
@@ -176,6 +214,7 @@ MIGRATIONS = [
     ("2026-11-01-review-provider-action", review_provider_action),
     ("2026-11-01-protected-core-tiering", protected_core_tiering),
     ("2026-11-01-branch-model-keys", branch_model_keys),
+    ("2026-11-26-protect-claude-orchestration-config", protect_claude_orchestration),
 ]
 
 
@@ -203,8 +242,11 @@ def migrate(cfg: dict) -> tuple[list[str], list[str]]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("config", nargs="?", default=str(CONFIG_REL))
+    ap.add_argument("config", nargs="?",
+                    help=f"config のパス(既定: {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(resolve_config_path())
 
     path = Path(a.config)
     if not path.is_file():

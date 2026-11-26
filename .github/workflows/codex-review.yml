@@ -92,10 +92,14 @@ jobs:
             exit 1
           fi
           git archive "$BASE_SHA" "$HARNESS_REL" | tar -x -C "$dir"
-          # base に config が無ければ存在しないパスを渡す(= 既定値)
-          if git cat-file -e "$BASE_SHA:.kiro/orchestration/config.json" 2>/dev/null; then
-            git show "$BASE_SHA:.kiro/orchestration/config.json" > "$RUNNER_TEMP/harness-config.json"
-          fi
+          # base に config が無ければ存在しないパスを渡す(= 既定値)。新パス .claude/orchestration.json を
+          # 優先し、無ければ旧パス .kiro/orchestration/config.json(harness_config.py と同じ順)
+          for c in .claude/orchestration.json .kiro/orchestration/config.json; do
+            if git cat-file -e "$BASE_SHA:$c" 2>/dev/null; then
+              git show "$BASE_SHA:$c" > "$RUNNER_TEMP/harness-config.json"
+              break
+            fi
+          done
           echo "dir=$dir/$HARNESS_REL" >> "$GITHUB_OUTPUT"
           {
             echo "SCRIPTS=$dir/$HARNESS_REL/scripts"

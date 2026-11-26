@@ -111,7 +111,8 @@ VERSION_REL = ".harness/version"
 MANIFEST_REL = "sync-manifest.json"
 # policy_gate.py と揃える(.harness/version に owned が無いときの配布物 / 同期 PR が変更してよい範囲)
 DEFAULT_OWNED = [".claude/skills/linear-worker", ".claude/rules/git-workflow.md", ".harness/invariants.json"]
-SYNC_EXTRA = [".harness/", ".github/workflows/", "CLAUDE.md", ".kiro/orchestration/config.json"]
+# config は新旧どちらのパスも(Harness Sync が旧パスから新パスへ移すため)
+SYNC_EXTRA = [".harness/", ".github/workflows/", "CLAUDE.md", common.CONFIG_REL, common.LEGACY_CONFIG_REL]
 SYNC_REASON = "配布元からの同期 PR(内容の検証は policy-gate が行う)"
 
 
@@ -306,12 +307,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", required=True, help="PR の base(SHA または origin/<branch>)")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--repo", help="owner/name(既定: $GITHUB_REPOSITORY / config の github.repo)")
-    ap.add_argument("--config", default=str(common.CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {common.CONFIG_REL}、無ければ旧 {common.LEGACY_CONFIG_REL})")
     ap.add_argument("--template", default=str(TEMPLATE))
     ap.add_argument("--output", help="判定結果の JSON を書き出すファイル")
     ap.add_argument("--prompt-out", help="mode が full / delta の時にプロンプトを書き出すファイル")
     ap.add_argument("--github-output", action="store_true", help="$GITHUB_OUTPUT にも書く")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(common.resolve_config_path())
 
     try:
         cfg = common.load_config(Path(a.config))

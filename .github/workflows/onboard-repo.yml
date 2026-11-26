@@ -8,7 +8,7 @@
 #      needs-human / needs-local ラベルの作成(secret LINEAR_API_KEY がある場合のみ。無ければスキップ)
 #   2. 対象リポジトリ: 配布物(.claude/skills/linear-worker, .claude/rules/git-workflow.md)の同期、
 #      harness-sync.yml / docs-policy.yml の配置、CLAUDE.md への import 行(@.claude/rules/git-workflow.md)、
-#      .kiro/orchestration/config.json の生成 → PR を作成(または default branch へ直接 push)
+#      config(.claude/orchestration.json。旧 .kiro/orchestration/config.json があればそれを使う)の生成 → PR を作成(または default branch へ直接 push)
 #   3. 本リポジトリ: registry/repos.yaml にエントリを追加してコミット
 #   4. ジョブサマリに「残りの手作業」と Routine 設定シート(プロンプト本文込み)を出力
 #
@@ -306,7 +306,7 @@ jobs:
           # 「導入済み」に見えてしまう。git add -A が落とすのは「未追跡かつ ignore 対象」の
           # ファイルなので、書き込んだパス配下でそれに該当するファイルを個別に列挙して失敗させる
           mapfile -t roots < <(jq -r '.assets_synced[]' /tmp/bootstrap.json)
-          roots+=(CLAUDE.md .kiro/orchestration/config.json .github/workflows/harness-sync.yml .github/workflows/docs-policy.yml)
+          roots+=(CLAUDE.md "$(jq -r '.config_path // ".claude/orchestration.json"' /tmp/bootstrap.json)" .github/workflows/harness-sync.yml .github/workflows/docs-policy.yml)
           ignored=$(git ls-files --others --ignored --exclude-standard -- "${roots[@]}" 2>/dev/null || true)
           if [ -n "$ignored" ]; then
             echo "::error::対象リポジトリの .gitignore が配布ファイルを除外しています(コミットされません): $(echo "$ignored" | tr '\n' ' ')— 除外を外してから再実行してください"
@@ -362,7 +362,7 @@ jobs:
               *)        echo "- ドキュメント検査ワークフローは既存の \`docs-policy.yml\` を使用(配布版と同一)" ;;
             esac
             echo "- \`CLAUDE.md\`: $(jq -r .claude_md /tmp/bootstrap.json)(\`@.claude/rules/git-workflow.md\` の import)"
-            echo "- \`.kiro/orchestration/config.json\`: $(jq -r .config /tmp/bootstrap.json)"
+            echo "- \`$(jq -r '.config_path // ".claude/orchestration.json"' /tmp/bootstrap.json)\`: $(jq -r .config /tmp/bootstrap.json)"
             echo
             echo "## マージ前に確認すること"
             echo

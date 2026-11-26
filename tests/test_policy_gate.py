@@ -118,7 +118,7 @@ class EvaluateTest(unittest.TestCase):
         self.assertEqual(self.approvals, 0)
 
     def test_instruction_files_are_not_core(self):
-        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg_path = self.repo / ".claude/orchestration.json"  # 同期で旧パスから移っている
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         cfg["auto_merge"]["protected_paths"] = list(pg.DEFAULT_CORE)
         write(cfg_path, json.dumps(cfg))
@@ -140,7 +140,7 @@ class EvaluateTest(unittest.TestCase):
 
     def test_core_from_base_config_not_head(self):
         # base の config で .claude/settings.json をコアにしておく
-        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg_path = self.repo / ".claude/orchestration.json"  # 同期で旧パスから移っている
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         cfg["auto_merge"]["protected_paths"] = [".claude/settings.json"]
         write(cfg_path, json.dumps(cfg))
@@ -153,8 +153,75 @@ class EvaluateTest(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn(".claude/settings.json", "\n".join(r.details))
 
+    # ------------------------------------------------------------ config の置き場所(新旧)
+
+    def move_config_back_to_legacy(self, cfg: dict) -> None:
+        """base の config を旧パスだけに置く(移動前の取り込み側)。"""
+        git(self.repo, "rm", "-q", "--cached", ".claude/orchestration.json")
+        (self.repo / ".claude/orchestration.json").unlink()
+        write(self.repo / ".kiro/orchestration/config.json", json.dumps(cfg))
+
+    def test_core_from_legacy_base_config(self):
+        cfg_path = self.repo / ".claude/orchestration.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["auto_merge"]["protected_paths"] = ["Assets/Secret/"]
+        self.move_config_back_to_legacy(cfg)
+        self.base = commit_all(self.repo, "legacy config")
+        self.branch()
+        write(self.repo / "Assets/Secret/a.txt", "x\n")
+        r = self.evaluate(commit_all(self.repo))
+        self.assertFalse(r.ok)
+        self.assertIn("Assets/Secret/a.txt", "\n".join(r.details))
+
+    def test_new_config_wins_over_legacy(self):
+        cfg_path = self.repo / ".claude/orchestration.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["auto_merge"]["protected_paths"] = ["Assets/New/"]
+        write(cfg_path, json.dumps(cfg))
+        legacy = dict(cfg, auto_merge={"protected_paths": ["Assets/Old/"]})
+        write(self.repo / ".kiro/orchestration/config.json", json.dumps(legacy))
+        self.base = commit_all(self.repo, "both configs")
+        self.branch()
+        write(self.repo / "Assets/Old/a.txt", "x\n")
+        with redirect_stderr(io.StringIO()) as err:
+            r = self.evaluate(commit_all(self.repo))
+        self.assertTrue(r.ok, r.reason)  # 旧パスの保護は使わない
+        self.assertIn("::warning::", err.getvalue())
+
+    def test_both_config_paths_are_floor_core(self):
+        for rel in (".claude/orchestration.json", ".kiro/orchestration/config.json"):
+            with self.subTest(rel=rel):
+                self.assertTrue(pg.matches(rel, pg.FLOOR_CORE))
+                self.assertTrue(pg.matches(rel, pg.SYNC_EXTRA))
+                self.assertTrue(pg.matches(rel, pg.DEFAULT_CORE))
+
+    def test_config_change_at_new_path_needs_approval(self):
+        cfg_path = self.repo / ".claude/orchestration.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["auto_merge"]["protected_paths"] = []
+        write(cfg_path, json.dumps(cfg))
+        self.base = commit_all(self.repo, "config without protection")
+        self.branch()
+        cfg["auto_merge"]["enabled"] = True
+        write(cfg_path, json.dumps(cfg))
+        head = commit_all(self.repo)
+        self.assertFalse(self.evaluate(head).ok)
+        self.assertTrue(self.evaluate(head, approved=True).ok)
+
+    def test_sync_pr_moving_config_is_in_sync_range(self):
+        cfg_path = self.repo / ".claude/orchestration.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self.move_config_back_to_legacy(cfg)
+        self.base = commit_all(self.repo, "legacy config")
+        self.branch("chore/harness-sync-x")
+        git(self.repo, "mv", ".kiro/orchestration/config.json", ".claude/orchestration.json")
+        write(self.repo / ".harness/version", "{}\n")
+        r = self.evaluate(commit_all(self.repo), sync_result=(True, ["一致"]))
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual(self.verifies, 1)  # 範囲外として弾かれず、完全一致検証まで進む
+
     def test_floor_core_applies_even_if_config_drops_it(self):
-        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg_path = self.repo / ".claude/orchestration.json"  # 同期で旧パスから移っている
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         cfg["auto_merge"]["protected_paths"] = []
         write(cfg_path, json.dumps(cfg))
@@ -245,7 +312,7 @@ class EvaluateTest(unittest.TestCase):
                 git(self.repo, "checkout", "-q", "develop")
 
     def release_setup(self):
-        cfg_path = self.repo / ".kiro/orchestration/config.json"
+        cfg_path = self.repo / ".claude/orchestration.json"  # 同期で旧パスから移っている
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         cfg["github"].update({"default_branch": "develop", "release_branch": "main"})
         write(cfg_path, json.dumps(cfg, indent=2))

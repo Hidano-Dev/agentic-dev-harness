@@ -3,6 +3,36 @@
 取り込み側は上書きマージで追従するため、**削除・改名**を伴う変更はここに明記し、
 取り込み側で手動追従が必要なものを分かるようにする。
 
+## 2026-11-26 — config の置き場所を `.claude/orchestration.json` へ移す
+
+Kiro(SDD)を使わないリポジトリから `.kiro/` を丸ごと消せるよう、取り込み側の config を
+`.kiro/orchestration/config.json` から `.claude/orchestration.json` へ移す。**旧パスも引き続き読む**
+(新パスが無ければ旧パス、両方あれば新パスを使い warning を出す)。
+
+- **解決を 1 か所に**: 配布物に `.claude/skills/linear-worker/scripts/harness_config.py`(新規)。
+  `CONFIG_REL` / `LEGACY_CONFIG_REL` / `CONFIG_CANDIDATES`、`choose_config_rel(exists, warn)`・
+  `resolve_config_path(root)`。`check_docs_policy.py` `classify_change.py` `migrate_config.py` `release_notes.py`
+  `review_plan.py` `post_review.py` `review_status.py`(`codex_review_common.py` 経由)と `scripts/sync/` `scripts/onboard/`
+  がこれを使う。単独で取り出して実行される `policy_gate.py` `resolve_conflicts.py` は写しを持つ
+  (`tests/test_harness_config.py` が一致を検査する)。`--config` を省いたときの既定が「新パス、無ければ旧パス」になる
+- **ワークフロー**: `codex-review.yml` `conflict-sweeper.yml` `promote.yml` も新パス → 旧パスの順で読む
+  (Harness Sync で更新される)
+- **移動**: `apply_sync.py`(Harness Sync)が、旧パスだけに config があるリポジトリの config を新パスへ移す
+  (空になった `.kiro/orchestration/`・`.kiro/` を消す。`.kiro/specs/` などの他の中身には触れない)。次のときは移さない:
+  - 配布物以外のファイル(`.claude/` `.kiro/` の下。SDD の dev-orchestrator など)が旧パスを参照している
+    (dev-orchestrator が `confirmation_channel` を見失わないように)。参照を直せば次の同期で移る
+  - 同期前の `policy_gate.py` が新パスを知らない(移動を含む同期 PR が base 側のゲートで「同期の範囲外」になり、
+    人間の承認待ちになるため)。この版を取り込む最初の同期では移さず、**次の同期で移す**
+- **保護**: config 移行 `2026-11-26-protect-claude-orchestration-config` が `auto_merge.protected_paths` に
+  `.claude/orchestration.json` を足す(`.claude/` などで覆われていれば何もしない)。`.kiro/orchestration/` は
+  旧パスで動くリポジトリのために残す。`policy_gate.py` の既定のコア・常にコアとするパス・同期 PR の範囲にも新旧両方を入れた
+- **オンボーディング**: `bootstrap_target.py` は新パスに config を作る(旧パスに既存の config があればそれを使う)
+- 本リポジトリ自身の config も `.claude/orchestration.json` へ移した
+  - 新パスが取り込み側の `.gitignore` で除外されている
+- **取り込み側で必要な作業: なし**(同期で自動的に移る。待たずに移すなら `git mv .kiro/orchestration/config.json
+  .claude/orchestration.json` だけでよい。その PR はコアの変更なので人間の承認が要る)。SDD を使うリポジトリは、
+  dev-orchestrator が新パスを読めるようになるまで旧パスのままにする
+
 ## 2026-11-01 — 待機・判定・マージを GitHub 側へ移し、develop / main の 2 段構成にする
 
 PR 提出後に止まる原因(Codex App のレビューが五月雨式に届く、指摘ゼロのときの 👍 をワーカーが拾えない、

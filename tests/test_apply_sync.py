@@ -9,7 +9,8 @@ import unittest.mock
 from contextlib import redirect_stderr
 from pathlib import Path
 
-from _helpers import HARNESS_REPO, commit_all, git, make_consumer, make_harness, minimal_config, write
+from _helpers import (CONFIG_REL as NEW, HARNESS_REPO, LEGACY_CONFIG_REL as LEGACY, commit_all, git, make_consumer,
+                      make_harness, minimal_config, write)
 
 import apply_sync
 from apply_sync import SyncError
@@ -62,12 +63,107 @@ class ApplySyncTest(unittest.TestCase):
         self.assertIn("::warning::templates/consumer/docs-policy.yml", self.stderr)
 
     def test_applies_config_migrations(self):
-        before = json.loads((self.target / ".kiro/orchestration/config.json").read_text(encoding="utf-8"))
+        before = json.loads((self.target / LEGACY).read_text(encoding="utf-8"))
         r = self.apply()
-        after = json.loads((self.target / ".kiro/orchestration/config.json").read_text(encoding="utf-8"))
+        after = json.loads((self.target / NEW).read_text(encoding="utf-8"))
         self.assertEqual(r["config"], "migrated")
         self.assertNotEqual(before, after)
         self.assertIn(".kiro/orchestration/", after["auto_merge"]["protected_paths"])
+
+    # ------------------------------------------------------------ config の置き場所の移動
+
+    def test_legacy_only_config_moves_to_new_path(self):
+        # .kiro/ の他の中身(SDD の資産)には触れない
+        write(self.target / ".kiro/specs/feature-a/requirements.md", "# spec\n")
+        commit_all(self.target, "spec")
+        before = json.loads((self.target / LEGACY).read_text(encoding="utf-8"))
+        r = self.apply()
+        self.assertEqual(r["config_moved"], f"{LEGACY} -> {NEW}")
+        self.assertFalse((self.target / LEGACY).exists())
+        self.assertFalse((self.target / ".kiro/orchestration").exists())
+        self.assertTrue((self.target / ".kiro/specs/feature-a/requirements.md").is_file())
+        after = json.loads((self.target / NEW).read_text(encoding="utf-8"))
+        self.assertEqual(after["github"]["repo"], before["github"]["repo"])  # 中身はそのまま(移行だけ適用)
+        self.assertIn(NEW, after["auto_merge"]["protected_paths"])
+        # git から見ると旧パスの削除と新パスの追加(git mv 相当。移行で中身も変わるので R になるとは限らない)
+        git(self.target, "add", "-A")
+        status = git(self.target, "diff", "--cached", "--name-status", "--no-renames", "--", LEGACY, NEW)
+        self.assertEqual(sorted(status.splitlines()), sorted([f"A\t{NEW}", f"D\t{LEGACY}"]))
+
+    def test_empty_kiro_dir_is_removed(self):
+        self.apply()
+        self.assertFalse((self.target / ".kiro").exists())
+
+    def test_move_is_idempotent(self):
+        self.apply()
+        commit_all(self.target, "sync")
+        tree1 = git(self.target, "rev-parse", "HEAD^{tree}")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        git(self.target, "add", "-A")
+        self.assertEqual(git(self.target, "write-tree"), tree1)
+
+    def test_move_is_deferred_while_old_policy_gate_is_installed(self):
+        # 同期前の policy_gate.py(base 側で同期 PR を判定する)が新パスを知らなければ、今回は移さない
+        write(self.target / ".claude/skills/linear-worker/scripts/policy_gate.py",
+              'CONFIG_REL = ".kiro/orchestration/config.json"\n')
+        commit_all(self.target, "old harness")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        self.assertTrue((self.target / LEGACY).is_file())
+        self.assertFalse((self.target / NEW).exists())
+        self.assertIn("次回の同期", self.stderr)
+        self.assertEqual(r["config"], "migrated")  # 旧パスのまま移行は適用する
+        # 次の同期(新しい policy_gate.py が入った後)で移す
+        commit_all(self.target, "sync 1")
+        r = self.apply()
+        self.assertIn("config_moved", r)
+        self.assertTrue((self.target / NEW).is_file())
+
+    def test_move_is_skipped_while_other_files_reference_legacy_path(self):
+        write(self.target / ".claude/skills/dev-orchestrator/SKILL.md",
+              "confirmation_channel は .kiro/orchestration/config.json から読む\n")
+        commit_all(self.target, "sdd")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        self.assertTrue((self.target / LEGACY).is_file())
+        self.assertIn(".claude/skills/dev-orchestrator/SKILL.md", self.stderr)
+
+    def test_move_is_skipped_when_new_path_is_gitignored(self):
+        write(self.target / ".gitignore", ".claude/*.json\n")
+        commit_all(self.target, "ignore")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        self.assertTrue((self.target / LEGACY).is_file())
+        self.assertIn(".gitignore", self.stderr)
+
+    def test_new_path_only_is_used(self):
+        os.remove(self.target / LEGACY)
+        write(self.target / NEW, json.dumps(minimal_config()) + "\n")
+        commit_all(self.target, "new path")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        self.assertEqual(r["config"], "migrated")
+        self.assertFalse((self.target / LEGACY).exists())
+
+    def test_both_paths_prefer_new_and_warn(self):
+        legacy_text = (self.target / LEGACY).read_text(encoding="utf-8")
+        write(self.target / NEW, json.dumps(minimal_config()) + "\n")
+        commit_all(self.target, "both")
+        r = self.apply()
+        self.assertNotIn("config_moved", r)
+        self.assertEqual(r["config"], "migrated")
+        self.assertIn("::warning::", self.stderr)
+        self.assertIn("両方", self.stderr)
+        # 旧パスは触らない(どちらを残すかは人間が決める)
+        self.assertEqual((self.target / LEGACY).read_text(encoding="utf-8"), legacy_text)
+
+    def test_no_config_is_absent(self):
+        os.remove(self.target / LEGACY)
+        commit_all(self.target, "no config")
+        r = self.apply()
+        self.assertEqual(r["config"], "absent")
+        self.assertFalse((self.target / NEW).exists())
 
     def test_idempotent_and_deterministic(self):
         self.apply()
@@ -123,9 +219,13 @@ class ApplySyncTest(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_invalid_config_aborts(self):
-        write(self.target / ".kiro/orchestration/config.json", "{ broken")
-        with self.assertRaises(SyncError):
-            self.apply()
+        for rel in (LEGACY, NEW):
+            with self.subTest(rel=rel):
+                if (self.target / LEGACY).exists():
+                    os.remove(self.target / LEGACY)
+                write(self.target / rel, "{ broken")
+                with self.assertRaises(SyncError):
+                    self.apply()
 
     def test_gitignored_destination_aborts(self):
         write(self.target / ".gitignore", ".harness/\n")

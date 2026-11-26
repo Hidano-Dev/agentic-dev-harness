@@ -5,7 +5,8 @@ description: >-
   ワーカーのポリシー。Routine から起動された新規リモートセッション、または
   「Linear の次のタスクを進めて」と依頼されたセッションで使用する。
   1 回の起動で処理する Issue は 1 件のみ。対象チーム・ラベル・チェックコマンド等は
-  `.kiro/orchestration/config.json` から読む(リポジトリ固有の値をこのスキルに書かない)。
+  `.claude/orchestration.json`(旧 `.kiro/orchestration/config.json` も読む)から読む
+  (リポジトリ固有の値をこのスキルに書かない)。
 ---
 
 # Linear 駆動 自律ワーカー
@@ -21,12 +22,14 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 導入されていない(`.claude/commands/kiro/` が無い)リポジトリでは spec 由来の作業は発生しないので
 読み飛ばす。
 
-## 設定(`.kiro/orchestration/config.json`)
+## 設定(`.claude/orchestration.json`)
 
 このスキルはリポジトリ固有の値を一切持たない。起動時に必ず
-`.kiro/orchestration/config.json` を読み、次のキーを使う(雛形:
+`.claude/orchestration.json` を読み、次のキーを使う(雛形:
 `templates/orchestration-config.json`。SDD 導入時は dev-orchestrator の `confirmation_channel` と
-同じファイルに同居する)。**ファイルが無い・`linear.team` が無い場合は何も着手せず、
+同じファイルに同居する)。旧パス `.kiro/orchestration/config.json` も読む: 新パスが無ければ旧パスを使い、
+両方あれば新パスを使う(解決は `scripts/harness_config.py`。旧パスだけのリポジトリは Harness Sync が
+新パスへ移す。SDD の dev-orchestrator など配布物以外が旧パスを参照している間は移さない)。**ファイルが無い・`linear.team` が無い場合は何も着手せず、
 「harness 設定なし」と報告して終了する**(対象キューが特定できないまま動かない)。
 
 | キー | 意味 | 既定 |
@@ -62,7 +65,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 | `docs.release_label` | リリース用ドキュメント整理の Issue に付ける Linear ラベルと、そのリリース用 PR に付ける GitHub ラベル(同名) | `release-docs` |
 | `auto_merge.enabled` | 作業ブランチへの自動マージ(GitHub auto-merge の予約)を許可するか | true(雛形の値。キーが無い場合は false として扱う) |
 | `auto_merge.method` | `merge` / `squash` / `rebase` | `merge` |
-| `auto_merge.protected_paths` | **コア**(ゲート・権限・CI・config)のパス接頭辞。変更する PR は人間の Approve が無いと `policy-gate` が失敗する。指示文(`CLAUDE.md` `AGENTS.md` 等)はここに入れない(`git-workflow.md` §6-1) | `[".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/"]` |
+| `auto_merge.protected_paths` | **コア**(ゲート・権限・CI・config)のパス接頭辞。変更する PR は人間の Approve が無いと `policy-gate` が失敗する。指示文(`CLAUDE.md` `AGENTS.md` 等)はここに入れない(`git-workflow.md` §6-1) | `[".github/", ".harness/", ".kiro/orchestration/", ".kiro/settings/", ".claude/settings.json", ".codex/", ".claude/orchestration.json"]` |
 | `auto_merge.merge_parked` | マージ承認待ちで駐機した PR を、巡回で条件を満たせばマージ + ブランチ削除するか(§1-A 巡回マージ。`enabled` とは独立) | true |
 | `reporting.linear_status` | 終了時に Linear プロジェクトへステータス更新を投稿するか(§5) | true |
 | `reporting.notion` | 終了時に Linear プロジェクトの Overview にリンクされた Notion ページの古くなった記述を直すか(§5) | true |
@@ -75,7 +78,7 @@ SDD ワークフロー(`/kiro:*` コマンド・dev-orchestrator)は本スキル
 
 ## 0. 起動時の前提確認
 
-1. `.kiro/orchestration/config.json` を読む(上記)。
+1. config(`.claude/orchestration.json`。無ければ旧 `.kiro/orchestration/config.json`)を読む(上記)。
 2. `git fetch origin <default_branch>` し、作業ブランチの最新から作業すること。
 3. Linear MCP が使えることを確認する。使えない場合は何もせず、その旨を報告して終了する。
 4. **起動時に作業ツリーが clean であることを確認する**(`git status --short` が空)。
@@ -636,7 +639,7 @@ PR が次のいずれかに当たる場合、`policy-gate` は現在ヘッドへ
 迂回しない(ブランチ保護の変更・`--admin`・チェックの再実行で通そうとする等は禁止)。
 
 - コア(`auto_merge.protected_paths`。既定 `.github/` `.harness/` `.kiro/orchestration/` `.kiro/settings/`
-  `.claude/settings.json` `.codex/`)を変更する
+  `.claude/settings.json` `.codex/` `.claude/orchestration.json`)を変更する
 - 配布物(`sync-manifest.json` の `owned`)を変更する(配布元からの同期 PR で、内容が配布元の指定コミットと
   完全一致すると検証できたものを除く)
 
@@ -752,4 +755,4 @@ Notion のページは人間が管理・把握する要約であり、膨らま�
   (`policy-gate` の迂回 — ブランチ保護・必須チェックの変更、`--admin`、`.harness/invariants.json` の
   緩和を含む)
 - リリースブランチ(`github.release_branch`)への PR 作成・Release PR のマージ・その auto-merge の予約
-- `.kiro/orchestration/config.json` の値をワーカー自身が書き換えること
+- config(`.claude/orchestration.json`。旧 `.kiro/orchestration/config.json`)の値をワーカー自身が書き換えること

@@ -143,7 +143,7 @@ FacialControl の `.github/actions/run-unity-tests`(composite action)を参照�
 
 ### 8. ハーネス側の設定
 
-対象リポジトリの `.kiro/orchestration/config.json`:
+対象リポジトリの config(`.claude/orchestration.json`。旧パス `.kiro/orchestration/config.json` も読む):
 
 ```json
 "linear": { "labels": { "needs_unity": "needs-unity" } },

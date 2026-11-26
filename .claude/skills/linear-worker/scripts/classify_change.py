@@ -31,7 +31,7 @@
 - 比較は `git diff <base>...<head>`(merge-base 起点)。PR 全体なら `--base
   origin/<default_branch>`、前回レビュー済みのコミットからの追加分なら `--base <その SHA>`
 - 終了コード: 0 = fast track、1 = レビュー要、2 = エラー(判定できない。レビュー要として扱う)
-- config(`.kiro/orchestration/config.json`)が無いリポジトリでも既定値で判定する
+- config(`.claude/orchestration.json`。旧 `.kiro/orchestration/config.json` も読む)が無いリポジトリでも既定値で判定する
 
 標準ライブラリのみ使用(ランナー・ローカルどちらでも動く)。
 """
@@ -48,7 +48,9 @@ import tokenize
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-CONFIG_REL = Path(".kiro/orchestration/config.json")
+# `python3 -I` ではスクリプトのディレクトリが sys.path に入らないので足してから読む
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_config import CONFIG_REL, LEGACY_CONFIG_REL, resolve_config_path  # noqa: E402
 # SKILL.md 設定表の既定値。キーが無い config ではこれを使う
 DEFAULT_TEXT_EXTENSIONS = [".md", ".markdown", ".rst", ".adoc", ".asciidoc"]
 DEFAULT_TEXT_EXCLUDE_PATHS = [".kiro/", "Assets/", "Packages/"]
@@ -574,11 +576,13 @@ def classify_file(change, settings) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", default=str(CONFIG_REL))
+    ap.add_argument("--config", help=f"設定ファイル(既定: {CONFIG_REL}、無ければ旧 {LEGACY_CONFIG_REL})")
     ap.add_argument("--base", required=True, help="比較元(origin/<default_branch>、または前回レビュー済みの SHA)")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--json", action="store_true", help="結果を JSON で出力する")
     a = ap.parse_args(argv)
+    if not a.config:
+        a.config = str(resolve_config_path())
 
     try:
         settings = load_settings(Path(a.config))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`.kiro/orchestration/config.json` を雛形から生成する。
+"""config(`.claude/orchestration.json`)を雛形から生成する。
 
 Onboard Repository ワークフロー(.github/workflows/onboard-repo.yml)から
 bootstrap_target.py 経由で呼ばれる。雛形は
